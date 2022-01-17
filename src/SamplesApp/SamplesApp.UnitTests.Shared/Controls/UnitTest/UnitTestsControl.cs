@@ -17,6 +17,7 @@ using SampleControl.Presentation;
 using Uno.Disposables;
 using Uno.Extensions;
 using Uno.UI.RuntimeTests;
+using Uno.Testing;
 using Uno.UI.Samples.Helper;
 using Windows.UI;
 using Windows.UI.Core;
@@ -59,16 +60,8 @@ namespace Uno.UI.Samples.Tests
 
 		private ApplicationView _applicationView;
 
-		private List<TestCase> _testCases = new List<TestCase>();
+		private List<TestCaseResult> _testCases = new List<TestCaseResult>();
 		private TestRun _currentRun;
-
-		private enum TestResult
-		{
-			Passed,
-			Failed,
-			Error,
-			Skipped,
-		}
 
 		public UnitTestsControl()
 		{
@@ -212,7 +205,7 @@ namespace Uno.UI.Samples.Tests
 		private void ReportTestResult(string testName, TimeSpan duration, TestResult testResult, Exception error = null, string message = null, string console = null)
 		{
 			_testCases.Add(
-				new TestCase
+				new TestCaseResult
 				{
 					TestName = testName,
 					Duration = duration,
@@ -287,7 +280,7 @@ namespace Uno.UI.Samples.Tests
 				Update);
 		}
 
-		private static string GenerateNUnitTestResults(List<TestCase> testCases, TestRun testRun)
+		private static string GenerateNUnitTestResults(List<TestCaseResult> testCases, TestRun testRun)
 		{
 			var resultsId = Guid.NewGuid().ToString();
 
@@ -546,15 +539,14 @@ namespace Uno.UI.Samples.Tests
 			await GenerateTestResults();
 		}
 
-		private MethodInfo[] FilterTests(UnitTestClassInfo testClassInfo, string[] filters)
+		private IEnumerable<MethodInfo> FilterTests(UnitTestClassInfo testClassInfo, string[] filters)
 		{
 			var testClassNameContainsFilters = filters?.Any(f => testClassInfo.Type.FullName.Contains(f, StrComp)) ?? false;
 			return testClassInfo.Tests
 				.Where(t => (filters?.None() ?? true)
 					|| testClassNameContainsFilters
 					|| filters.Any(f => t.DeclaringType.FullName.Contains(f, StrComp))
-					|| filters.Any(f => t.Name.Contains(f, StrComp)))
-				.ToArray();
+					|| filters.Any(f => t.Name.Contains(f, StrComp)));
 		}
 
 		private async Task ExecuteTestsForInstance(
@@ -567,7 +559,9 @@ namespace Uno.UI.Samples.Tests
 				? ConsoleOutputRecorder.Start()
 				: default;
 
-			var tests = FilterTests(testClassInfo, config.Filters);
+			var tests = FilterTests(testClassInfo, config.Filters)
+				.Select(method => new UnitTestMethodInfo(instance, method))
+				.ToArray();
 			if (tests.None())
 			{
 				return;
@@ -576,9 +570,9 @@ namespace Uno.UI.Samples.Tests
 			ReportTestClass(testClassInfo.Type.GetTypeInfo());
 			_ = ReportMessage($"Running {tests.Length} test methods");
 
-			foreach (var testMethod in tests)
+			foreach (var test in tests)
 			{
-				var testName = testMethod.Name;
+				var testName = test.Name;
 
 				if (ct.IsCancellationRequested)
 				{
@@ -586,7 +580,7 @@ namespace Uno.UI.Samples.Tests
 					return;
 				}
 
-				if (IsIgnored(testMethod, out var ignoreMessage))
+				if (test.IsIgnored(out var ignoreMessage))
 				{
 					if (config.IsRunningIgnored)
 					{
@@ -602,40 +596,20 @@ namespace Uno.UI.Samples.Tests
 					}
 				}
 
-				var runsOnUIThread =
-					HasCustomAttribute<RunsOnUIThreadAttribute>(testMethod) ||
-					HasCustomAttribute<RunsOnUIThreadAttribute>(testMethod.DeclaringType);
-				var requiresFullWindow =
-					HasCustomAttribute<RequiresFullWindowAttribute>(testMethod) ||
-					HasCustomAttribute<RequiresFullWindowAttribute>(testMethod.DeclaringType);
-				var expectedException = testMethod
-					.GetCustomAttributes<ExpectedExceptionAttribute>()
-					.SingleOrDefault();
-				var dataRows = testMethod
-					.GetCustomAttributes<DataRowAttribute>()
-					.ToList();
-				if (dataRows.Any())
+				foreach (var testCase in test.GetCases())
 				{
-					foreach (var row in dataRows)
+					if (ct.IsCancellationRequested)
 					{
-						if (ct.IsCancellationRequested)
-						{
-							_ = ReportMessage("Stopped by user.", false);
-							return;
-						}
-
-						var d = row.Data;
-						await InvokeTestMethod(d);
+						_ = ReportMessage("Stopped by user.", false);
+						return;
 					}
-				}
-				else
-				{
-					await InvokeTestMethod(Array.Empty<object>());
+
+					await InvokeTestMethod(testCase);
 				}
 
-				async Task InvokeTestMethod(object[] parameters)
+				async Task InvokeTestMethod(TestCase testCase)
 				{
-					var fullTestName = $"{testName}({parameters.Select(p => p?.ToString() ?? "<null>").JoinBy(", ")})";
+					var fullTestName = testName + testCase.ToString();
 
 					_currentRun.Run++;
 					_currentRun.CurrentRepeatCount = 0;
@@ -645,6 +619,7 @@ namespace Uno.UI.Samples.Tests
 					await ReportMessage($"Running test {fullTestName}");
 					ReportTestsResults();
 
+					var cleanupActions = new List<ActionAsync>();
 					var sw = new Stopwatch();
 					var canRetry = true;
 
@@ -654,7 +629,7 @@ namespace Uno.UI.Samples.Tests
 
 						try
 						{
-							if (requiresFullWindow)
+							if (test.RequiresFullWindow)
 							{
 								await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
 								{
@@ -666,28 +641,52 @@ namespace Uno.UI.Samples.Tests
 									Private.Infrastructure.TestServices.WindowHelper.UseActualWindowRoot = true;
 									Private.Infrastructure.TestServices.WindowHelper.SaveOriginalWindowContent();
 								});
+								cleanupActions.Add(async _ =>
+								{
+									await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+									{
+#if __ANDROID__
+										// Restore the systray!
+										ApplicationView.GetForCurrentView().ExitFullScreenMode();
+#endif
+										Private.Infrastructure.TestServices.WindowHelper.RestoreOriginalWindowContent();
+										Private.Infrastructure.TestServices.WindowHelper.UseActualWindowRoot = false;
+									});
+								});
 							}
 
 							object returnValue = null;
-							if (runsOnUIThread)
+							if (test.RunsOnUIThread)
 							{
 								await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
 								{
+									if (testCase.Pointer is { } pt)
+									{
+										var ptSubscription = (instance as IInjectPointers ?? throw new InvalidOperationException("test class does not supports pointer selection.")).SetPointer(pt);
+										cleanupActions.Add(async _ => ptSubscription.Dispose());
+									}
+
 									sw.Start();
 									testClassInfo.Initialize?.Invoke(instance, new object[0]);
-									returnValue = testMethod.Invoke(instance, parameters);
+									returnValue = test.Method.Invoke(instance, testCase.Parameters);
 									sw.Stop();
 								});
 							}
 							else
 							{
+								if (testCase.Pointer is { } pt)
+								{
+									var ptSubscription = (instance as IInjectPointers ?? throw new InvalidOperationException("test class does not supports pointer selection.")).SetPointer(pt);
+									cleanupActions.Add(async _ => ptSubscription.Dispose());
+								}
+
 								sw.Start();
 								testClassInfo.Initialize?.Invoke(instance, new object[0]);
-								returnValue = testMethod.Invoke(instance, parameters);
+								returnValue = test.Method.Invoke(instance, testCase.Parameters);
 								sw.Stop();
 							}
 
-							if (testMethod.ReturnType == typeof(Task))
+							if (test.Method.ReturnType == typeof(Task))
 							{
 								var task = (Task)returnValue;
 								var timeoutTask = Task.Delay(DefaultUnitTestTimeout);
@@ -707,7 +706,7 @@ namespace Uno.UI.Samples.Tests
 
 							var console = consoleRecorder?.GetContentAndReset();
 
-							if (expectedException == null)
+							if (test.ExpectedException is null)
 							{
 								_currentRun.Succeeded++;
 								ReportTestResult(fullTestName, sw.Elapsed, TestResult.Passed, console: console);
@@ -716,7 +715,7 @@ namespace Uno.UI.Samples.Tests
 							{
 								_currentRun.Failed++;
 								ReportTestResult(fullTestName, sw.Elapsed, TestResult.Failed,
-									message: $"Test did not throw the excepted exception of type {expectedException.ExceptionType.Name}",
+									message: $"Test did not throw the excepted exception of type {test.ExpectedException.Name}",
 									console: console);
 							}
 						}
@@ -741,7 +740,7 @@ namespace Uno.UI.Samples.Tests
 								_currentRun.Ignored++;
 								ReportTestResult(fullTestName, sw.Elapsed, TestResult.Skipped, message: e.Message, console: console);
 							}
-							else if (expectedException == null || !expectedException.ExceptionType.IsInstanceOfType(e))
+							else if (test.ExpectedException is null || !test.ExpectedException.IsInstanceOfType(e))
 							{
 								if (_currentRun.CurrentRepeatCount < config.Attempts - 1 && !Debugger.IsAttached)
 								{
@@ -764,17 +763,9 @@ namespace Uno.UI.Samples.Tests
 						}
 						finally
 						{
-							if (requiresFullWindow)
+							foreach (var cleanup in cleanupActions.Where(action => action is not null))
 							{
-								await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
-								{
-#if __ANDROID__
-									// Restore the systray!
-									ApplicationView.GetForCurrentView().ExitFullScreenMode();
-#endif
-									Private.Infrastructure.TestServices.WindowHelper.RestoreOriginalWindowContent();
-									Private.Infrastructure.TestServices.WindowHelper.UseActualWindowRoot = false;
-								});
+								await cleanup(CancellationToken.None);
 							}
 						}
 					}
@@ -801,27 +792,6 @@ namespace Uno.UI.Samples.Tests
 					ReportTestResult(testName + " Cleanup", TimeSpan.Zero, TestResult.Failed, e, console: consoleRecorder.GetContentAndReset());
 				}
 			}
-		}
-
-		private bool HasCustomAttribute<T>(MemberInfo testMethod)
-			=> testMethod.GetCustomAttribute(typeof(T)) != null;
-
-		private bool IsIgnored(MethodInfo testMethod, out string ignoreMessage)
-		{
-			var ignoreAttribute = testMethod.GetCustomAttribute<IgnoreAttribute>();
-			if (ignoreAttribute == null)
-			{
-				ignoreAttribute = testMethod.DeclaringType.GetCustomAttribute<IgnoreAttribute>();
-			}
-
-			if (ignoreAttribute != null)
-			{
-				ignoreMessage = string.IsNullOrEmpty(ignoreAttribute.IgnoreMessage) ? "Test is marked as ignored" : ignoreAttribute.IgnoreMessage;
-				return true;
-			}
-
-			ignoreMessage = "";
-			return false;
 		}
 
 		private IEnumerable<UnitTestClassInfo> InitializeTests()
