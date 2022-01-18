@@ -11,19 +11,21 @@
 	<StackPanel Spacing="4" Margin="30">
 
 		<TextBlock FontSize="18">
-			All following squares should be identical
+			All following shapes (squares or rectangles) should be identical
 		</TextBlock>
 
-		<Slider x:Name="size" Minimum="50" Maximum="450" Value="100" Header="size" />
+		<Slider x:Name="shapeWidth" Minimum="50" Maximum="450" Value="300" Header="shapeWidth" />
+
+		<Slider x:Name="shapeHeight" Minimum="50" Maximum="450" Value="300" Header="shapeHeight" />
 
 		<StackPanel Orientation="Horizontal" Spacing="8">
-			<Border Width="{Binding Value, ElementName=size}" Height="{Binding Value, ElementName=size}" BorderBrush="Blue" BorderThickness="2" Background="Orange" x:Name="ctl1">
+			<Border Width="{Binding Value, ElementName=shapeWidth}" Height="{Binding Value, ElementName=shapeHeight}" BorderBrush="Blue" BorderThickness="2" Background="Orange" x:Name="ctl1">
 				<Border Margin="20">
 					<Rectangle Fill="Red" />
 				</Border>
 			</Border>
 
-			<Border Width="{Binding Value, ElementName=size}" Height="{Binding Value, ElementName=size}" BorderBrush="Blue" BorderThickness="2" x:Name="ctl2">
+			<Border Width="{Binding Value, ElementName=shapeWidth}" Height="{Binding Value, ElementName=shapeHeight}" BorderBrush="Blue" BorderThickness="2" x:Name="ctl2">
 				<ScrollViewer Background="Orange">
 					<Border Margin="20">
 						<Rectangle Fill="Red" />
@@ -31,7 +33,7 @@
 				</ScrollViewer>
 			</Border>
 
-			<Border Width="{Binding Value, ElementName=size}" Height="{Binding Value, ElementName=size}" BorderBrush="Blue" BorderThickness="2" x:Name="ctl3">
+			<Border Width="{Binding Value, ElementName=shapeWidth}" Height="{Binding Value, ElementName=shapeHeight}" BorderBrush="Blue" BorderThickness="2" x:Name="ctl3">
 				<ScrollViewer>
 					<Border Background="Orange">
 						<Border Margin="20">
@@ -41,7 +43,7 @@
 				</ScrollViewer>
 			</Border>
 
-			<Border Width="{Binding Value, ElementName=size}" Height="{Binding Value, ElementName=size}" BorderBrush="Blue" BorderThickness="2" Padding="20" Background="Orange" x:Name="ctl4">
+			<Border Width="{Binding Value, ElementName=shapeWidth}" Height="{Binding Value, ElementName=shapeHeight}" BorderBrush="Blue" BorderThickness="2" Padding="20" Background="Orange" x:Name="ctl4">
 				<ScrollViewer>
 					<Border>
 						<Rectangle Fill="Red" />
@@ -49,7 +51,7 @@
 				</ScrollViewer>
 			</Border>
 
-			<Border Width="{Binding Value, ElementName=size}" Height="{Binding Value, ElementName=size}" BorderBrush="Blue" BorderThickness="2" x:Name="ctl5">
+			<Border Width="{Binding Value, ElementName=shapeWidth}" Height="{Binding Value, ElementName=shapeHeight}" BorderBrush="Blue" BorderThickness="2" x:Name="ctl5">
 				<ScrollViewer Padding="20" Background="Orange">
 					<Border>
 						<Rectangle Fill="Red" />

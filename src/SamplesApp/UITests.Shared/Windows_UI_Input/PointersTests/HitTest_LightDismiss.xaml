@@ -11,7 +11,7 @@
 		<converters:StringConverter x:Key="StringConverter" />
 	</Page.Resources>
 
-	<Grid>
+	<!--<Grid>
 		<StackPanel HorizontalAlignment="Left">
 			<Button x:Name="LaunchDismissiblePopupButton"
 					Margin="10"
@@ -27,7 +27,7 @@
 				<Button.Flyout>
 					<Flyout x:Name="ButtonFlyout"
 							Placement="Full">
-						<!--'Chromeless' flyout presenter style-->
+						--><!--'Chromeless' flyout presenter style--><!--
 						<Flyout.FlyoutPresenterStyle>
 							<Style TargetType="FlyoutPresenter">
 								<Setter Property="HorizontalAlignment"
@@ -116,5 +116,5 @@
 			<TextBlock x:Name="ComboBoxStatusTextBlock"
 					   Text="{Binding ElementName=TargetComboBox, Path=IsDropDownOpen, Converter={StaticResource StringConverter}}" />
 		</StackPanel>
-	</Grid>
+	</Grid>-->
 </Page>
