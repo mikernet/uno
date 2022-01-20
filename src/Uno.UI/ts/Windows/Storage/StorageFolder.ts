@@ -4,6 +4,7 @@ namespace Windows.Storage {
 
 	export class StorageFolder {
 		private static _isInit = false;
+		private static _isSynchronizing = false;
 		private static dispatchStorageInitialized: () => number;
 
 		/**
@@ -63,14 +64,8 @@ namespace Windows.Storage {
 
 			// Ensure to sync pseudo file system on unload (and periodically for safety)
 			if (!this._isInit) {
-
-			// Request an initial sync to populate the file system
-				FS.syncfs(true, err => {
-					if (err) {
-						console.error(`Error synchronizing filesystem from IndexDB: ${err} (errno: ${err.errno})`);
-					}
-					StorageFolder.onStorageInitialized();
-				});
+				// Request an initial sync to populate the file system
+				StorageFolder.synchronizeFileSystem();
 
 				window.addEventListener("beforeunload", this.synchronizeFileSystem);
 				setInterval(this.synchronizeFileSystem, 10000);
@@ -92,10 +87,18 @@ namespace Windows.Storage {
 		 * Synchronize the IDBFS memory cache back to IndexDB
 		 * */
 		private static synchronizeFileSystem(): void {
-			FS.syncfs(err => {
-				if (err) {
-					console.error(`Error synchronizing filesystem from IndexDB: ${err} (errno: ${err.errno})`);
-			}});
+
+			if (!StorageFolder._isSynchronizing) {
+				StorageFolder._isSynchronizing = true;
+
+				FS.syncfs(err => {
+					StorageFolder._isSynchronizing = false;
+
+					if (err) {
+						console.error(`Error synchronizing filesystem from IndexDB: ${err} (errno: ${err.errno})`);
+					}
+				});
+			}
 		}
 	}
 }
