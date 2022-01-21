@@ -503,6 +503,8 @@ namespace Windows.UI.Xaml
 
 			OnChildAdded(child);
 
+			child.ResetLayoutFlags();
+
 			child.InvalidateMeasure();
 
 			// Arrange is required to unset the uno-unarranged CSS class
@@ -534,6 +536,8 @@ namespace Windows.UI.Xaml
 			if (childParent != null)
 			{
 				Uno.UI.Xaml.WindowManagerInterop.RemoveView(HtmlId, child.HtmlId);
+
+				child.InvalidateMeasure();
 			}
 		}
 
