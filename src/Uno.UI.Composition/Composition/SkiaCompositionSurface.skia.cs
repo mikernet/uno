@@ -51,6 +51,13 @@ namespace Microsoft.UI.Composition
 			_onFrameChanged = onFrameChanged;
 		}
 
+		/// <summary>
+		/// Releases the decoded frames now, for an image nothing displays anymore, instead of leaving them to the finalizer
+		/// (which only runs once the surface has been collected, so the pixels outlive the element by several collections).
+		/// <see cref="Image"/> is null afterwards; loading frames again makes the surface usable.
+		/// </summary>
+		internal void ReleaseFrames() => SetFrameProviderAndOnFrameChanged(null, null);
+
 		internal (bool success, object nativeResult) LoadFromStream(Stream imageStream) => LoadFromStream(null, null, imageStream);
 
 		internal (bool success, object nativeResult) LoadFromStream(int? targetWidth, int? targetHeight, Stream imageStream)
