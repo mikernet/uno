@@ -40,7 +40,9 @@ namespace Microsoft.UI.Xaml.Controls
 			{
 				InitializeSvgSource(svgImageSource);
 			}
-			else if (newValue is ImageSource source)
+			// Subscribing is what decodes the source, so an unloaded Image (e.g. a recycled container whose binding
+			// updates off-tree) waits for OnLoaded, as WinUI decodes only once the element is in the live tree.
+			else if (newValue is ImageSource source && IsLoaded)
 			{
 				InitializeImageSource(source);
 			}

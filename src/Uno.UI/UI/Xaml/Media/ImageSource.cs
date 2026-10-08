@@ -215,7 +215,12 @@ namespace Microsoft.UI.Xaml.Media
 		{
 			UnloadImageDataPlatform();
 			UnloadImageSourceData();
+#if __ANDROID__ || __APPLE_UIKIT__
 			_imageData = ImageData.Empty;
+#else
+			// A UriSource change on an opened bitmap included: the previous decode is shown by nothing anymore.
+			ReleaseImageData();
+#endif
 		}
 
 		partial void UnloadImageDataPlatform();

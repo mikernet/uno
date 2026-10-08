@@ -69,7 +69,6 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 			try
 			{
 				var (decodeWidth, decodeHeight) = GetDecodePixelSize();
-				SharesImageData = false;
 				var uri = UriSource;
 				if (uri is null)
 				{
@@ -106,6 +105,14 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 							throw;
 						}
 
+						if (ct.IsCancellationRequested)
+						{
+							// Superseded while decoding: the result must not be published on a source that moved on, and a
+							// stream load is never shared, so it is this requester's alone to release.
+							ReleaseSurface(imageData);
+							throw new OperationCanceledException(ct);
+						}
+
 						if (imageData.Kind == ImageDataKind.Error)
 						{
 							PixelWidth = 0;
@@ -139,10 +146,6 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 						&& !CreateOptions.HasFlag(BitmapCreateOptions.IgnoreImageCache);
 					var cacheKey = new BitmapImageCacheKey(uri, decodeWidth, decodeHeight);
 
-					// Only a load that went through the shared cache is shared with other sources, and then it is the cache's
-					// to release, not this source's.
-					SharesImageData = useCache;
-
 					Task<ImageData> imageDataTask = null;
 
 					if (useCache && _bitmapImageCache.TryGetValue(cacheKey, out imageDataTask) && IsFailedLoad(imageDataTask))
@@ -165,7 +168,11 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 						{
 							try
 							{
-								return await ImageSourceHelpers.GetImageDataFromUriAsCompositionSurface(uri, loadCt, decodeWidth, decodeHeight);
+								var imageData = await ImageSourceHelpers.GetImageDataFromUriAsCompositionSurface(uri, loadCt, decodeWidth, decodeHeight);
+
+								// A cached result is shared by every source that loads the same key, so it is the cache's to
+								// release: marked once here, on the task every sharer awaits.
+								return useCache ? imageData.AsShared() : imageData;
 							}
 							catch (Exception e)
 							{
@@ -205,10 +212,10 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 						// The shared load may have completed between the cancellation and the await.
 						ct.ThrowIfCancellationRequested();
 					}
-					catch (OperationCanceledException) when (ct.IsCancellationRequested && !useCache)
+					catch (OperationCanceledException) when (ct.IsCancellationRequested)
 					{
 						// The decode cannot be stopped and this requester will never show its result, so release the surface
-						// it produces instead of leaving it to finalization. A cached load is shared and stays the cache's.
+						// it produces instead of leaving it to finalization (a cached result is shared and stays the cache's).
 						_ = imageDataTask.ContinueWith(
 							static t => ReleaseSurface(t.Result),
 							CancellationToken.None,

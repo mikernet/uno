@@ -88,25 +88,34 @@ namespace Microsoft.UI.Xaml.Media
 		}
 
 		/// <summary>
-		/// Whether the decoded data is shared with other sources (a cached load), in which case this source must not release it.
+		/// Number of decoded surfaces released ahead of finalization; for tests.
 		/// </summary>
-		private protected bool SharesImageData { get; set; }
+		internal static int ReleasedSurfacesForTesting;
 
+		/// <summary>
+		/// Cancels an open in flight and releases the decoded data this source owns.
+		/// </summary>
 		private void ReleaseImageData()
 		{
 			_opening.Disposable = null;
-
-			if (!SharesImageData)
-			{
-				ReleaseImageDataPlatform();
-			}
-
+			ReleaseSurface(_imageData);
 			_imageData = ImageData.Empty;
 		}
 
-		partial void ReleaseImageDataPlatform();
-
-		partial void ReleaseAbandonedImageData(ImageData data);
+		/// <summary>
+		/// Releases the decoded frames of an image surface that nothing will display, unless the data is shared through
+		/// the bitmap cache, in which case it is the cache's to release.
+		/// </summary>
+		private protected static void ReleaseSurface(ImageData data)
+		{
+#if __SKIA__
+			if (!data.IsShared && data.Kind == ImageDataKind.CompositionSurface && data.CompositionSurface is { } surface)
+			{
+				surface.ReleaseFrames();
+				ReleasedSurfacesForTesting++;
+			}
+#endif
+		}
 
 		/// <summary>
 		/// Indicates that this source has already been opened
@@ -149,7 +158,7 @@ namespace Microsoft.UI.Xaml.Media
 							{
 								// A superseded open still produced an image nobody will show: release it now rather than leave it
 								// to finalization, which is what a burst of source changes would otherwise pile up.
-								ReleaseAbandonedImageData(data);
+								ReleaseSurface(data);
 							}
 						}
 						catch (OperationCanceledException) when (ct.IsCancellationRequested)
