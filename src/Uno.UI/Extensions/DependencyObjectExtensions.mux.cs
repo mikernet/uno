@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Uno.UI.Xaml.Input;
+using Uno.UI.Xaml.Islands;
 
 namespace Uno.UI.Extensions
 {
@@ -37,6 +38,24 @@ namespace Uno.UI.Extensions
 			//{
 			//	return m_pParent;
 			//}
+		}
+
+		// MUX Reference depends.cpp, commit 2b8c7757e — CDependencyObject::GetTreeRoot.
+		// IsObjectAnActiveRootVisual is approximated by a type check on RootVisual.
+		internal static DependencyObject GetTreeRoot(this DependencyObject dependencyObject, bool publicParentOnly = false)
+		{
+			DependencyObject pBase = dependencyObject;
+			DependencyObject? pParent = pBase.GetParentInternal(publicParentOnly);
+			bool parentIsRootVisual = pParent is RootVisual;
+
+			while (pParent is not null && (!publicParentOnly || !parentIsRootVisual) && pParent is not XamlIslandRoot)
+			{
+				pBase = pParent;
+				pParent = pParent.GetParentInternal(publicParentOnly);
+				parentIsRootVisual = pParent is RootVisual;
+			}
+
+			return pBase;
 		}
 
 		internal static bool SetFocusedElement(

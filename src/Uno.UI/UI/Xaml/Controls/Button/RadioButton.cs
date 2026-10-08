@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Uno.Disposables;
+using Uno.UI.Xaml;
 using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls
@@ -51,6 +52,30 @@ namespace Microsoft.UI.Xaml.Controls
 				new FrameworkPropertyMetadata(null)
 			);
 
+#if UNO_HAS_ENHANCED_LIFECYCLE
+		// WinUI unregisters a button when its peer is destroyed. Uno has no deterministic destruction, so a
+		// button is registered while it is in a live tree instead, which also covers trees discarded before Loaded.
+		internal override void EnterImpl(EnterParams @params, int depth)
+		{
+			base.EnterImpl(@params, depth);
+
+			if (@params.IsLive)
+			{
+				UnregisterSafe(this);
+				Register((string)GetValue(GroupNameProperty) ?? "", this);
+			}
+		}
+
+		internal override void LeaveImpl(LeaveParams @params)
+		{
+			base.LeaveImpl(@params);
+
+			if (@params.IsLive)
+			{
+				Unregister((string)GetValue(GroupNameProperty) ?? "", this);
+			}
+		}
+#else
 		private protected override void OnLoaded()
 		{
 			base.OnLoaded();
@@ -65,5 +90,6 @@ namespace Microsoft.UI.Xaml.Controls
 
 			Unregister((string)GetValue(GroupNameProperty) ?? "", this);
 		}
+#endif
 	}
 }
