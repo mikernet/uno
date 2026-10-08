@@ -6712,6 +6712,51 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 		public Task When_Touch_LongPress_Keeps_ContextMenu_Desktop()
 			=> AssertTouchLongPress(TextBox.TouchTextSelectionConvention.Desktop, expectWordSelected: false);
 
+		// Touch defers focus to the release (ShouldFocusOnPointerPressed), so a hold on an initially unfocused text control
+		// must focus it when the hold starts: otherwise the word is selected while unfocused (selection not rendered) and
+		// the focus taken on release resets the caret mode, wiping Android's selection handles.
+		[TestMethod]
+		[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop | RuntimeTestPlatforms.SkiaAndroid)] // Android convention: run on Desktop (dev) + real Android only
+		public async Task When_Touch_LongPress_Unfocused_Selects_Word_Android()
+		{
+			using var _ = new TextBoxFeatureConfigDisposable();
+			using var __ = new DisposableAction(() =>
+			{
+				(VisualTreeHelper.GetOpenPopupsForXamlRoot(WindowHelper.XamlRoot)).ForEach((_, p) => p.IsOpen = false);
+			});
+
+			var other = new Button { Content = "Other" };
+			var SUT = new TextBox
+			{
+				Width = 400,
+				Text = "Some Text",
+				TouchSelectionConvention = TextBox.TouchTextSelectionConvention.Android
+			};
+
+			await UITestHelper.Load(new StackPanel { Children = { other, SUT } });
+
+			other.Focus(FocusState.Programmatic);
+			await WindowHelper.WaitForIdle();
+			Assert.AreEqual(FocusState.Unfocused, SUT.FocusState, "premise: the text box starts unfocused");
+
+			var injector = InputInjector.TryCreate() ?? throw new InvalidOperationException("Failed to init the InputInjector");
+			using var finger = injector.GetFinger();
+
+			finger.Press(SUT.GetAbsoluteBoundsRect().GetCenter());
+			await Task.Delay(1200); // cross the 800ms Holding-gesture threshold
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreEqual("Text", SUT.SelectedText, "the hold should have selected the word");
+			Assert.AreNotEqual(FocusState.Unfocused, SUT.FocusState, "the hold should have focused the text box");
+
+			finger.Release();
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreEqual("Text", SUT.SelectedText, "the release must keep the word selected");
+			Assert.AreNotEqual(FocusState.Unfocused, SUT.FocusState, "the text box must stay focused after the release");
+			Assert.AreEqual(TextBox.CaretDisplayMode.CaretWithThumbsBothEndsShowing, SUT.CaretMode, "the release must keep the selection handles");
+		}
+
 		// A touch long-press on a mobile convention must select the word BEFORE the text control's flyout
 		// computes its commands. Regression: the inner DisplayBlock's ContextRequested class handler used to
 		// open the ContextFlyout with an empty selection (Cut/Copy omitted) before OnContextRequestedImpl

@@ -29,6 +29,7 @@ public partial class TextBox
 	private bool _touchCaretDrag;
 	// True once the current touch press was handled as a hold when the hold started (OnHolding): the delayed
 	// ContextRequested the ContextMenuProcessor raises for the same hold, and the release, are then not a new gesture.
+	// Only the next press or the release ends it: losing the capture mid-hold doesn't re-arm that delayed request.
 	private bool _touchHoldHandled;
 
 	protected override void OnPointerMoved(PointerRoutedEventArgs e)
@@ -368,6 +369,10 @@ public partial class TextBox
 			&& e.PointerDeviceType == PointerDeviceType.Touch
 			&& TouchSelectionConvention != TouchTextSelectionConvention.Desktop)
 		{
+			// Touch defers focus to the release (ShouldFocusOnPointerPressed); the hold acts now, so take it now, or the
+			// selection/caret-drag starts unfocused (not rendered) and the focus taken on release resets the caret mode.
+			Focus(FocusState.Pointer);
+
 			HandleTouchHold(e.GetPosition(TextBoxView.DisplayBlock), e.GetPosition(this));
 			_touchHoldHandled = true;
 		}
@@ -444,7 +449,6 @@ public partial class TextBox
 		_isPressed = false;
 		_mouseMultiTapChunk = null;
 		_touchCaretDrag = false;
-		_touchHoldHandled = false;
 	}
 
 	protected override void OnDoubleTapped(DoubleTappedRoutedEventArgs args)
