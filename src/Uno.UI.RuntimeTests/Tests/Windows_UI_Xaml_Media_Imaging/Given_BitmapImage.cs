@@ -9,6 +9,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Uno.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Private.Infrastructure;
 using Uno.UI.RuntimeTests.Helpers;
@@ -162,6 +164,47 @@ public class Given_BitmapImage
 		GC.KeepAlive(secondImage);
 	}
 
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Requester_Cancelled_After_Decode_Then_Abandoned_Surface_Released()
+	{
+		// Without the cache the load belongs to this source alone. The decode runs off the UI thread and its result is applied
+		// by a dispatched continuation; a source change that lands first (a user clicking through images quickly) must release
+		// the surface that continuation would otherwise drop.
+		var cacheWasEnabled = FeatureConfiguration.Image.EnableBitmapImageCache;
+		FeatureConfiguration.Image.EnableBitmapImageCache = false;
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var bitmap = new BitmapImage(server.Uri);
+			var result = TrackOpen(bitmap);
+			var image = new Image { Source = bitmap };
+
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "the download never started");
+
+			var createdBefore = ImageData.CompositionSurfacesCreatedForTesting;
+			var releasedBefore = ImageSource.ReleasedSurfacesForTesting;
+			server.ReleaseResponses();
+
+			// Holding the UI thread keeps the dispatched continuation from applying the result while the decode completes.
+			var decoded = SpinWait.SpinUntil(() => ImageData.CompositionSurfacesCreatedForTesting > createdBefore, 5000);
+			Assert.IsTrue(decoded, $"Pre-condition: the decode must complete (requests {server.RequestCount}, bodies sent {server.BodiesSent}, surfaces {ImageData.CompositionSurfacesCreatedForTesting - createdBefore}, opened {result.IsCompleted})");
+
+			bitmap.UriSource = null;
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsTrue(ImageSource.ReleasedSurfacesForTesting > releasedBefore, "The decoded surface nobody will show must be released");
+			Assert.IsFalse(result.IsCompleted, "The cancelled BitmapImage should raise neither ImageOpened nor ImageFailed");
+			GC.KeepAlive(image);
+		}
+		finally
+		{
+			FeatureConfiguration.Image.EnableBitmapImageCache = cacheWasEnabled;
+		}
+	}
+
 	private static Task<bool> TrackOpen(BitmapImage image)
 	{
 		var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -181,13 +224,16 @@ public class Given_BitmapImage
 		private readonly byte[] _body;
 		private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		private int _requestCount;
+		private int _bodiesSent;
 
 		private GatedImageServer(TcpListener listener, byte[] body)
 		{
 			_listener = listener;
 			_body = body;
 			Uri = new Uri($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/square100.png");
-			_ = AcceptLoopAsync();
+			// Off the UI thread: the test may hold the UI thread while a response is pending, and awaits started from it
+			// would otherwise resume through its synchronization context.
+			_ = Task.Run(AcceptLoopAsync);
 		}
 
 		public static async Task<GatedImageServer> StartAsync()
@@ -206,6 +252,8 @@ public class Given_BitmapImage
 
 		public int RequestCount => Volatile.Read(ref _requestCount);
 
+		public int BodiesSent => Volatile.Read(ref _bodiesSent);
+
 		public bool FailNextRequest { get; set; }
 
 		public void ReleaseResponses() => _release.TrySetResult();
@@ -222,7 +270,7 @@ public class Given_BitmapImage
 			{
 				while (true)
 				{
-					var client = await _listener.AcceptTcpClientAsync();
+					var client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
 					_ = HandleAsync(client);
 				}
 			}
@@ -245,7 +293,7 @@ public class Given_BitmapImage
 				var read = 0;
 				while (!Encoding.ASCII.GetString(request, 0, read).Contains("\r\n\r\n"))
 				{
-					var count = await stream.ReadAsync(request, read, request.Length - read);
+					var count = await stream.ReadAsync(request, read, request.Length - read).ConfigureAwait(false);
 					if (count == 0)
 					{
 						return;
@@ -265,13 +313,14 @@ public class Given_BitmapImage
 				}
 
 				var headers = $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {_body.Length}\r\nConnection: close\r\n\r\n";
-				await stream.WriteAsync(Encoding.ASCII.GetBytes(headers));
-				await stream.FlushAsync();
+				await stream.WriteAsync(Encoding.ASCII.GetBytes(headers)).ConfigureAwait(false);
+				await stream.FlushAsync().ConfigureAwait(false);
 
-				await _release.Task;
+				await _release.Task.ConfigureAwait(false);
 
-				await stream.WriteAsync(_body);
-				await stream.FlushAsync();
+				await stream.WriteAsync(_body).ConfigureAwait(false);
+				await stream.FlushAsync().ConfigureAwait(false);
+				Interlocked.Increment(ref _bodiesSent);
 			}
 			catch (IOException)
 			{

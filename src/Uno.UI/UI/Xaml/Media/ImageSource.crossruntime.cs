@@ -106,6 +106,8 @@ namespace Microsoft.UI.Xaml.Media
 
 		partial void ReleaseImageDataPlatform();
 
+		partial void ReleaseAbandonedImageData(ImageData data);
+
 		/// <summary>
 		/// Indicates that this source has already been opened
 		/// (So the onSourceOpened callback of Subscribe will be invoked synchronously!)
@@ -142,6 +144,12 @@ namespace Microsoft.UI.Xaml.Media
 							if (!ct.IsCancellationRequested)
 							{
 								OnOpened(data);
+							}
+							else
+							{
+								// A superseded open still produced an image nobody will show: release it now rather than leave it
+								// to finalization, which is what a burst of source changes would otherwise pile up.
+								ReleaseAbandonedImageData(data);
 							}
 						}
 						catch (OperationCanceledException) when (ct.IsCancellationRequested)

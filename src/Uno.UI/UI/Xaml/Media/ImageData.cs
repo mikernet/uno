@@ -42,7 +42,16 @@ internal partial struct ImageData
 		NativeImage = uiImage ?? throw new ArgumentNullException(nameof(uiImage));
 	}
 #elif __SKIA__
-	public static ImageData FromCompositionSurface(SkiaCompositionSurface compositionSurface) => new(compositionSurface);
+	/// <summary>
+	/// Number of decoded surfaces produced; for tests.
+	/// </summary>
+	internal static int CompositionSurfacesCreatedForTesting;
+
+	public static ImageData FromCompositionSurface(SkiaCompositionSurface compositionSurface)
+	{
+		CompositionSurfacesCreatedForTesting++;
+		return new(compositionSurface);
+	}
 
 	private ImageData(SkiaCompositionSurface compositionSurface)
 	{
