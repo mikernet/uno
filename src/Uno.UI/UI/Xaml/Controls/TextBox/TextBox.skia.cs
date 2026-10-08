@@ -352,7 +352,11 @@ public partial class TextBox : ITextSelectionGripperHost
 		_clipboardChangeSubscription.Disposable = null;
 	}
 
-	partial void OnIsReadonlyChangedPartial() => UpdateCanPasteClipboardContent();
+	partial void OnIsReadonlyChangedPartial()
+	{
+		UpdateCanPasteClipboardContent();
+		TextBoxView?.UpdateProperties();
+	}
 
 	partial void OnForegroundColorChangedPartial(Brush newValue)
 	{
