@@ -115,6 +115,8 @@ internal partial class ContextMenuProcessor
 
 		if (isDraggableOrPannable)
 		{
+			StopContextMenuTimer();
+
 			// Create and start the contextmenu timer, and attach the timeout handler to fire ShowContextMenu
 			_contextMenuTimer = new DispatcherTimer();
 			_contextMenuTimer.Interval = TimeSpan.FromMilliseconds(ContextRequestOnHoldDelayMs);
@@ -164,6 +166,23 @@ internal partial class ContextMenuProcessor
 	/// Gets the context menu timer.
 	/// </summary>
 	public DispatcherTimer? GetContextMenuTimer() => _contextMenuTimer;
+
+	/// <summary>
+	/// Stops the delayed context menu of a touch hold on a draggable/pannable element, when the pointer
+	/// is released or its capture changes before the delay elapsed (the hold no longer requests a menu).
+	/// </summary>
+	/// <remarks>
+	/// Ported from WinUI PointerInputProcessor.cpp (XCP_POINTERUP, XCP_POINTERCAPTURECHANGED and XCP_POINTERSUSPENDED).
+	/// </remarks>
+	public void StopContextMenuTimer()
+	{
+		if (_contextMenuTimer is { } timer)
+		{
+			timer.Stop();
+			timer.Tick -= OnContextRequestOnHoldingTimeout;
+			_contextMenuTimer = null;
+		}
+	}
 
 	/// <summary>
 	/// Sets the touch point for context menu on holding gesture.

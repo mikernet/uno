@@ -492,6 +492,9 @@ internal partial class InputManager
 				return;
 			}
 
+			// A touch released before the delayed context menu of a hold on a pannable element no longer requests the menu.
+			_inputManager.ContextMenuProcessor.StopContextMenuTimer();
+
 			if (BeforeReleaseTryRedirectToManipulations(args))
 			{
 				TraceIgnoredForManipulations(args);
@@ -610,6 +613,8 @@ internal partial class InputManager
 
 		internal void CancelPointer(PointerEventArgs args, bool isInjected = false, bool isDirectManipulation = false, bool isDirectManipulationResume = false)
 		{
+			_inputManager.ContextMenuProcessor.StopContextMenuTimer();
+
 			if (!HitTestOrRoot(args, _isOver, out var originalSource, out var overStaleBranch))
 			{
 				TraceIgnoredAsNoTree(args);
