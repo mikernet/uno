@@ -1,6 +1,7 @@
 ﻿#nullable enable
 
 using System;
+using System.Threading;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml.Media;
 
@@ -49,7 +50,7 @@ internal partial struct ImageData
 
 	public static ImageData FromCompositionSurface(SkiaCompositionSurface compositionSurface)
 	{
-		CompositionSurfacesCreatedForTesting++;
+		Interlocked.Increment(ref CompositionSurfacesCreatedForTesting);
 		return new(compositionSurface);
 	}
 

@@ -112,7 +112,7 @@ namespace Microsoft.UI.Xaml.Media
 			if (!data.IsShared && data.Kind == ImageDataKind.CompositionSurface && data.CompositionSurface is { } surface)
 			{
 				surface.ReleaseFrames();
-				ReleasedSurfacesForTesting++;
+				Interlocked.Increment(ref ReleasedSurfacesForTesting);
 			}
 #endif
 		}

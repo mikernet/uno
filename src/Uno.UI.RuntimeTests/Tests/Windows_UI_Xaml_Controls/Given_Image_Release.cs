@@ -207,11 +207,12 @@ public class Given_Image_Release
 			var panel = new StackPanel();
 			await UITestHelper.Load(panel, x => x.IsLoaded);
 
-			// The first requester stays loaded so its cache entry is never evicted by a cancellation.
+			// A cache-on requester fills the cache and a second one shares the entry: unloading both must not release
+			// the shared surface, which is the cache's (an entry is only evicted when its load fails).
 			FeatureConfiguration.Image.EnableBitmapImageCache = true;
-			await AddAndWaitForOpened(panel, new Image { Width = 100, Height = 40, Source = new BitmapImage(uri) });
+			var first = new Image { Width = 100, Height = 40, Source = new BitmapImage(uri) };
+			await AddAndWaitForOpened(panel, first);
 
-			// Another cache-on requester shares the entry: unloading it must not release the shared surface.
 			var createdBefore = ImageData.CompositionSurfacesCreatedForTesting;
 			var releasedBefore = ImageSource.ReleasedSurfacesForTesting;
 			var sharing = new Image { Width = 100, Height = 40, Source = new BitmapImage(uri) };
@@ -219,6 +220,7 @@ public class Given_Image_Release
 			Assert.AreEqual(createdBefore, ImageData.CompositionSurfacesCreatedForTesting, "A cache-on requester is served from the cache");
 
 			panel.Children.Remove(sharing);
+			panel.Children.Remove(first);
 			await WindowHelper.WaitForIdle();
 			Assert.AreEqual(releasedBefore, ImageSource.ReleasedSurfacesForTesting, "A shared surface is the cache's to release, not a requester's");
 
