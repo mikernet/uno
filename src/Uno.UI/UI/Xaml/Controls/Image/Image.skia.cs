@@ -202,6 +202,29 @@ namespace Microsoft.UI.Xaml.Controls
 			}
 		}
 
+		private protected override void OnLoaded()
+		{
+			base.OnLoaded();
+
+			// The subscription was released on unload: subscribe again, which decodes the source again.
+			if (_sourceDisposable.Disposable is null && Source is { } source)
+			{
+				OnSourceChanged(source, forceReload: false);
+			}
+		}
+
+		private protected override void OnUnloaded()
+		{
+			base.OnUnloaded();
+
+			// Nothing displays this image while it is unloaded, so its subscription is released, which lets the source release
+			// its decoded pixels; the sprite must not keep pointing at them.
+			_imageSprite.Brush = null;
+			_currentSurface = null;
+			_pendingImageData = null;
+			_sourceDisposable.Disposable = null;
+		}
+
 		partial void OnMonochromeColorChanged()
 		{
 			if (_surfaceBrush is not null)

@@ -74,8 +74,37 @@ namespace Microsoft.UI.Xaml.Media
 				Open();
 			}
 
-			return Disposable.Create(() => _subscriptions.Remove(onSourceOpened));
+			return Disposable.Create(() =>
+			{
+				_subscriptions.Remove(onSourceOpened);
+
+				// Nothing displays the image anymore: its decoded pixels are released now, as WinUI drops a decoded surface
+				// once its last user lets go, and decoded again if something subscribes later.
+				if (_subscriptions.Count == 0)
+				{
+					ReleaseImageData();
+				}
+			});
 		}
+
+		/// <summary>
+		/// Whether the decoded data is shared with other sources (a cached load), in which case this source must not release it.
+		/// </summary>
+		private protected bool SharesImageData { get; set; }
+
+		private void ReleaseImageData()
+		{
+			_opening.Disposable = null;
+
+			if (!SharesImageData)
+			{
+				ReleaseImageDataPlatform();
+			}
+
+			_imageData = ImageData.Empty;
+		}
+
+		partial void ReleaseImageDataPlatform();
 
 		/// <summary>
 		/// Indicates that this source has already been opened
@@ -85,7 +114,7 @@ namespace Microsoft.UI.Xaml.Media
 
 		private protected void InvalidateSource()
 		{
-			_imageData = default;
+			ReleaseImageData();
 			if (_subscriptions.Count > 0 || this is SvgImageSource)
 			{
 				Open();

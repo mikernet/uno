@@ -58,6 +58,7 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 			try
 			{
 				var (decodeWidth, decodeHeight) = GetDecodePixelSize();
+				SharesImageData = false;
 				var uri = UriSource;
 				if (uri is null)
 				{
@@ -125,6 +126,10 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 
 					var ignoreCache = CreateOptions.HasFlag(BitmapCreateOptions.IgnoreImageCache);
 					var cacheKey = new BitmapImageCacheKey(uri, decodeWidth, decodeHeight);
+
+					// With the cache on, the decoded surface is shared with every source that loads the same key, so it is the
+					// cache's to release, not this source's.
+					SharesImageData = FeatureConfiguration.Image.EnableBitmapImageCache;
 
 					if (ignoreCache
 						|| !_bitmapImageCache.TryGetValue(cacheKey, out var imageDataTask))

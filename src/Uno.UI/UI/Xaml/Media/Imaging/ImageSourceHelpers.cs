@@ -16,7 +16,6 @@ using Uno.Disposables;
 using Uno.Foundation.Logging;
 
 #if __SKIA__
-using System.Runtime.InteropServices;
 using SkiaSharp;
 using System.Runtime.InteropServices.JavaScript;
 #endif
@@ -67,30 +66,22 @@ internal static partial class ImageSourceHelpers
 				}
 
 				var bytes = decodedBufferObject.GetPropertyAsByteArray("bytes");
-				SKImage image;
-				unsafe
+
+				try
 				{
-					var gcHandle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-					fixed (void* ptr = bytes)
+					// Copied into native memory: releasing the surface then frees the pixels at once, and the managed array is
+					// ordinary garbage. Pinning it instead kept it on the managed heap until a chain of finalizers unpinned it.
+					var image = SKImage.FromPixelCopy(new SKImageInfo(width, height, SKColorType.Rgba8888), bytes);
+					if (image == null)
 					{
-						try
-						{
-							image = SKImage.FromPixels(new SKPixmap(new SKImageInfo(width, height, SKColorType.Rgba8888), new IntPtr(ptr)), static (_, gcHandle) =>
-							{
-								((GCHandle)gcHandle).Free();
-							}, gcHandle);
-							if (image == null)
-							{
-								throw new InvalidOperationException($"{nameof(SKImage)}.{nameof(SKImage.FromPixels)} returned null.");
-							}
-							return ImageData.FromCompositionSurface(new SkiaCompositionSurface(image));
-						}
-						catch (Exception e)
-						{
-							gcHandle.Free();
-							return ImageData.FromError(e);
-						}
+						throw new InvalidOperationException($"{nameof(SKImage)}.{nameof(SKImage.FromPixelCopy)} returned null.");
 					}
+
+					return ImageData.FromCompositionSurface(new SkiaCompositionSurface(image));
+				}
+				catch (Exception e)
+				{
+					return ImageData.FromError(e);
 				}
 			}
 		}
