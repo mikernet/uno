@@ -912,5 +912,85 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 #endif
 			}
 		}
+
+#if HAS_UNO
+#if !HAS_INPUT_INJECTOR
+		[Ignore("InputInjector is not supported on this platform.")]
+#endif
+		[TestMethod]
+		public async Task When_Popup_Closed_Externally_Then_Service_Releases_ToolTip()
+		{
+			// A tooltip closed by a path the service does not drive (here its popup, closed with every other popup) must not
+			// stay the service's current tooltip: WinUI lets go of it in the tooltip's own close (ToolTip::OnIsOpenChanged).
+			var root = new ContentControl();
+			TestServices.WindowHelper.WindowContent = root;
+			await TestServices.WindowHelper.WaitForIdle();
+
+			var injector = InputInjector.TryCreate() ?? throw new InvalidOperationException("Failed to init the InputInjector");
+			using var mouse = injector.GetMouse();
+
+			try
+			{
+				await HoverToolTipOwnerThenClosePopup(root, mouse);
+
+				Assert.IsNull(ToolTipService.CurrentToolTipForTesting, "The service must not keep a tooltip that has closed.");
+			}
+			finally
+			{
+				mouse.MoveTo(new Windows.Foundation.Point(0, 0));
+				TestServices.WindowHelper.WindowContent = null;
+				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
+			}
+		}
+
+#if !HAS_INPUT_INJECTOR
+		[Ignore("InputInjector is not supported on this platform.")]
+#endif
+		[TestMethod]
+		public async Task When_Popup_Closed_Externally_Then_Owner_Collected()
+		{
+			// Once its tooltip has closed, however it closed, the owner is not kept alive through the service.
+			var root = new ContentControl();
+			TestServices.WindowHelper.WindowContent = root;
+			await TestServices.WindowHelper.WaitForIdle();
+
+			var injector = InputInjector.TryCreate() ?? throw new InvalidOperationException("Failed to init the InputInjector");
+			using var mouse = injector.GetMouse();
+
+			try
+			{
+				var ownerRef = await HoverToolTipOwnerThenClosePopup(root, mouse);
+
+				root.Content = null;
+				await TestServices.WindowHelper.WaitForIdle();
+
+				Assert.IsTrue(await TestHelper.TryWaitUntilCollected(ownerRef), "The owner of a tooltip closed with its popup was not collected.");
+			}
+			finally
+			{
+				mouse.MoveTo(new Windows.Foundation.Point(0, 0));
+				TestServices.WindowHelper.WindowContent = null;
+				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
+			}
+		}
+
+		private static async Task<WeakReference> HoverToolTipOwnerThenClosePopup(ContentControl root, Mouse mouse)
+		{
+			var owner = new Button { Content = "Hover me", Width = 100, Height = 50 };
+			var toolTip = new ToolTip { Content = "ToolTip content" };
+			ToolTipService.SetToolTip(owner, toolTip);
+			root.Content = owner;
+			await TestServices.WindowHelper.WaitForLoaded(owner);
+
+			mouse.MoveTo(owner.GetAbsoluteBoundsRect().GetCenter());
+			await UITestHelper.WaitFor(() => toolTip.IsOpen, timeoutMS: 5000, message: "The automatic tooltip did not open on hover.");
+
+			// The pointer stays over the owner, so nothing the service listens to closes the tooltip.
+			VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
+			await UITestHelper.WaitFor(() => !toolTip.IsOpen, timeoutMS: 5000, message: "Closing the popup did not close the tooltip.");
+
+			return new WeakReference(owner);
+		}
+#endif
 	}
 }
