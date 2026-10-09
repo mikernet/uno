@@ -81,9 +81,9 @@
 	<!--
 	Keep override cache consistent with current output and incremental for repeated local builds. The package's targets are pointed
 	at the new tasks once those are installed, and the package's own tasks are only deleted after that, so the targets always load
-	tasks that are present.
+	tasks that are present. If the copy failed (it only warns) and left no tasks assembly, the package is left on its own tasks.
 	-->
-	<Target Name="_UnoToolkitOverrideNugetCleanup" AfterTargets="_UnoToolkitOverrideNuget" DependsOnTargets="_UnoPointOverriddenPackageAtLocalTasks" Condition="'$(UnoNugetOverrideVersion)'!=''">
+	<Target Name="_UnoToolkitOverrideNugetCleanup" AfterTargets="_UnoToolkitOverrideNuget" DependsOnTargets="_UnoPointOverriddenPackageAtLocalTasks" Condition="'$(UnoNugetOverrideVersion)'!='' and $([System.IO.File]::Exists('$(_TargetNugetFolder)\$(TargetFileName)'))">
 		<Delete Files="@(_StaleTargetFiles)" ContinueOnError="true" />
 	</Target>
 </Project>
