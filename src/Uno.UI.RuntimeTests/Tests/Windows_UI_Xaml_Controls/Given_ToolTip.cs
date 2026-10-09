@@ -753,6 +753,7 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 #if HAS_UNO
 				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
 #endif
+				TestServices.WindowHelper.WindowContent = null;
 			}
 		}
 
@@ -785,6 +786,7 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 #if HAS_UNO
 				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
 #endif
+				TestServices.WindowHelper.WindowContent = null;
 			}
 		}
 
@@ -835,6 +837,7 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 #if HAS_UNO
 				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
 #endif
+				TestServices.WindowHelper.WindowContent = null;
 			}
 		}
 
@@ -876,6 +879,7 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 #if HAS_UNO
 				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
 #endif
+				TestServices.WindowHelper.WindowContent = null;
 			}
 		}
 
@@ -910,18 +914,21 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 #if HAS_UNO
 				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
 #endif
+				TestServices.WindowHelper.WindowContent = null;
 			}
 		}
 
-#if HAS_UNO
+		[TestMethod]
+		[PlatformCondition(ConditionMode.Exclude, RuntimeTestPlatforms.NativeWinUI)] // Checks the service's own bookkeeping.
 #if !HAS_INPUT_INJECTOR
 		[Ignore("InputInjector is not supported on this platform.")]
 #endif
-		[TestMethod]
+		[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25099")]
 		public async Task When_Popup_Closed_Externally_Then_Service_Releases_ToolTip()
 		{
-			// A tooltip closed by a path the service does not drive (here its popup, closed with every other popup) must not
-			// stay the service's current tooltip: WinUI lets go of it in the tooltip's own close (ToolTip::OnIsOpenChanged).
+			// A tooltip closed by a path the service does not drive (here its popup, closed while the pointer stays on the
+			// owner) must not stay the service's current tooltip: WinUI lets go of it in the tooltip's own close
+			// (ToolTip::OnIsOpenChanged).
 			var root = new ContentControl();
 			TestServices.WindowHelper.WindowContent = root;
 			await TestServices.WindowHelper.WaitForIdle();
@@ -933,20 +940,24 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 			{
 				await HoverToolTipOwnerThenClosePopup(root, mouse);
 
+#if HAS_UNO
 				Assert.IsNull(ToolTipService.CurrentToolTipForTesting, "The service must not keep a tooltip that has closed.");
+#endif
 			}
 			finally
 			{
 				mouse.MoveTo(new Windows.Foundation.Point(0, 0));
+				CloseOpenPopups();
 				TestServices.WindowHelper.WindowContent = null;
-				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
 			}
 		}
 
+		[TestMethod]
+		[PlatformCondition(ConditionMode.Exclude, RuntimeTestPlatforms.NativeWinUI)] // Checks managed reachability.
 #if !HAS_INPUT_INJECTOR
 		[Ignore("InputInjector is not supported on this platform.")]
 #endif
-		[TestMethod]
+		[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25099")]
 		public async Task When_Popup_Closed_Externally_Then_Owner_Collected()
 		{
 			// Once its tooltip has closed, however it closed, the owner is not kept alive through the service.
@@ -969,8 +980,42 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 			finally
 			{
 				mouse.MoveTo(new Windows.Foundation.Point(0, 0));
+				CloseOpenPopups();
 				TestServices.WindowHelper.WindowContent = null;
-				VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
+			}
+		}
+
+		[TestMethod]
+		[PlatformCondition(ConditionMode.Exclude, RuntimeTestPlatforms.NativeWinUI)] // Checks managed reachability.
+#if !HAS_INPUT_INJECTOR
+		[Ignore("InputInjector is not supported on this platform.")]
+#endif
+		[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25099")]
+		public async Task When_Opening_Cancelled_Then_Owner_Collected()
+		{
+			// The pointer leaves the owner during the show delay, so the tooltip never opens: the service must drop the pending
+			// tooltip, as WinUI's CancelAutomaticToolTip drops the pending owner, rather than keep it and its owner.
+			var root = new ContentControl();
+			TestServices.WindowHelper.WindowContent = root;
+			await TestServices.WindowHelper.WaitForIdle();
+
+			var injector = InputInjector.TryCreate() ?? throw new InvalidOperationException("Failed to init the InputInjector");
+			using var mouse = injector.GetMouse();
+
+			try
+			{
+				var ownerRef = await HoverToolTipOwnerThenLeaveBeforeOpening(root, mouse);
+
+				root.Content = null;
+				await TestServices.WindowHelper.WaitForIdle();
+
+				Assert.IsTrue(await TestHelper.TryWaitUntilCollected(ownerRef), "The owner of a tooltip that never opened was not collected.");
+			}
+			finally
+			{
+				mouse.MoveTo(new Windows.Foundation.Point(0, 0));
+				CloseOpenPopups();
+				TestServices.WindowHelper.WindowContent = null;
 			}
 		}
 
@@ -986,11 +1031,47 @@ namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Controls
 			await UITestHelper.WaitFor(() => toolTip.IsOpen, timeoutMS: 5000, message: "The automatic tooltip did not open on hover.");
 
 			// The pointer stays over the owner, so nothing the service listens to closes the tooltip.
-			VisualTreeHelper.CloseAllPopups(TestServices.WindowHelper.XamlRoot);
+			CloseOpenPopups();
 			await UITestHelper.WaitFor(() => !toolTip.IsOpen, timeoutMS: 5000, message: "Closing the popup did not close the tooltip.");
 
 			return new WeakReference(owner);
 		}
+
+		private static async Task<WeakReference> HoverToolTipOwnerThenLeaveBeforeOpening(ContentControl root, Mouse mouse)
+		{
+			var owner = new Button { Content = "Hover me", Width = 100, Height = 50 };
+			var toolTip = new ToolTip { Content = "ToolTip content" };
+			ToolTipService.SetToolTip(owner, toolTip);
+			root.Content = owner;
+			await TestServices.WindowHelper.WaitForLoaded(owner);
+
+			var bounds = owner.GetAbsoluteBoundsRect();
+			mouse.MoveTo(bounds.GetCenter());
+			await Task.Delay(100); // well inside the show delay
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.IsFalse(toolTip.IsOpen, "premise: the tooltip is still waiting to open");
+#if HAS_UNO
+			Assert.AreSame(toolTip, ToolTipService.CurrentToolTipForTesting, "premise: the service holds the pending tooltip");
 #endif
+
+			mouse.MoveTo(new Windows.Foundation.Point(bounds.Right + 50, bounds.Bottom + 50));
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.IsFalse(toolTip.IsOpen, "The tooltip must not open once the pointer has left.");
+#if HAS_UNO
+			Assert.IsNull(ToolTipService.CurrentToolTipForTesting, "The service must drop a tooltip whose opening was cancelled.");
+#endif
+
+			return new WeakReference(owner);
+		}
+
+		private static void CloseOpenPopups()
+		{
+			var popups = VisualTreeHelper.GetOpenPopupsForXamlRoot(TestServices.WindowHelper.XamlRoot);
+
+			for (var i = popups.Count - 1; i >= 0; i--)
+			{
+				popups[i].IsOpen = false;
+			}
+		}
 	}
 }
