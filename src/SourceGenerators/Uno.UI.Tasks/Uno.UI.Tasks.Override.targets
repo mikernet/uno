@@ -37,9 +37,13 @@
 		<Message Importance="high"
 				 Text="Pointing the package targets at the v0 tasks instead of the package's $(_UnoPackageTasksSuffix) tasks: @(_UnoPackageTasksBoundFile->'%(RecursiveDir)%(Filename)%(Extension)', ', ')"
 				 Condition="'@(_UnoPackageTasksBoundFile)' != ''" />
-		<WriteLinesToFile File="%(_UnoPackageTasksBoundFile.FullPath)"
+		<!-- Written next to each file and moved over it, so the package never holds a partly written targets file. -->
+		<WriteLinesToFile File="%(_UnoPackageTasksBoundFile.FullPath).override-tmp"
 						  Lines="$([MSBuild]::Escape($([System.IO.File]::ReadAllText('%(_UnoPackageTasksBoundFile.FullPath)').Replace('$(_UnoPackageTasksSuffix)', 'v0').TrimEnd())))"
 						  Overwrite="true"
 						  Condition="'@(_UnoPackageTasksBoundFile)' != ''" />
+		<Move SourceFiles="@(_UnoPackageTasksBoundFile->'%(FullPath).override-tmp')"
+			  DestinationFiles="@(_UnoPackageTasksBoundFile->'%(FullPath)')"
+			  Condition="'@(_UnoPackageTasksBoundFile)' != ''" />
 	</Target>
 </Project>
