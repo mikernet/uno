@@ -59,21 +59,13 @@
 		<Copy SkipUnchangedFiles="true" SourceFiles="@(_UnoTasksSourceFiles)" DestinationFiles="@(_UnoTasksShadowDestinationFiles)" Retries="1" RetryDelayMilliseconds="500" ContinueOnError="true" />
 	</Target>
 
-	<Target Name="_UnoToolkitOverrideNuget" AfterTargets="AfterBuild" DependsOnTargets="BuiltProjectOutputGroup" Condition="'$(UnoNugetOverrideVersion)'!=''">
+	<Import Project="Uno.UI.Tasks.Override.targets" />
+
+	<Target Name="_UnoToolkitOverrideNuget" AfterTargets="AfterBuild" DependsOnTargets="BuiltProjectOutputGroup;_UnoPointOverriddenPackageAtLocalTasks" Condition="'$(UnoNugetOverrideVersion)'!=''">
 		<PropertyGroup>
 			<_OverrideTargetFramework>$(TargetFramework)</_OverrideTargetFramework>
 			<_PackageId>uno.winui</_PackageId>
-			<_TargetNugetPackageFolder>$(NuGetPackageRoot)\$(_PackageId)\$(UnoNugetOverrideVersion)</_TargetNugetPackageFolder>
-			<_TargetNugetFolder>$(_TargetNugetPackageFolder)\buildTransitive\Uno.UI.Tasks</_TargetNugetFolder>
-
-			<!--
-				A published package's tasks are built with the commit SHA in place of "v0" (UpdateTasksSHA in build/Uno.UI.Build.csproj): the
-				assembly is Uno.UI.Tasks.<sha>.dll and the task types are named <Task>_<sha>, and the package's targets load them by those names.
-				The tasks built here keep "v0", so the package's targets are switched over to "v0" below. The SHA is read from the targets, which
-				no longer contain it once a previous override has switched them.
-			-->
-			<_PackageTasksTargetsFile>$(_TargetNugetPackageFolder)\buildTransitive\Uno.UI.Tasks.targets</_PackageTasksTargetsFile>
-			<_PackageTasksSuffix Condition="Exists('$(_PackageTasksTargetsFile)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(_PackageTasksTargetsFile)')), '(?&lt;=Uno\.UI\.Tasks\.)[0-9a-f]{40}(?=\.dll)'))</_PackageTasksSuffix>
+			<_TargetNugetFolder>$(NuGetPackageRoot)\$(_PackageId)\$(UnoNugetOverrideVersion)\buildTransitive\Uno.UI.Tasks</_TargetNugetFolder>
 		</PropertyGroup>
 		<ItemGroup>
 			<_OutputFiles Include="$(TargetDir)**\*.*" />
@@ -83,17 +75,6 @@
 		</ItemGroup>
 		<MakeDir Directories="$(_TargetNugetFolder)" />
 		<Message Importance="high" Text="OVERRIDING NUGET PACKAGE CACHE: $(_TargetNugetFolder)" />
-
-		<!-- Point the package's targets at the v0 tasks built here (see _PackageTasksSuffix above). -->
-		<ItemGroup Condition="'$(_PackageTasksSuffix)' != ''">
-			<_PackageTasksBoundFile Include="$(_TargetNugetPackageFolder)\buildTransitive\**\*.targets;$(_TargetNugetPackageFolder)\buildTransitive\**\*.props" />
-			<_PackageTasksBoundFile Remove="@(_PackageTasksBoundFile)" Condition="!$([System.IO.File]::ReadAllText('%(FullPath)').Contains('$(_PackageTasksSuffix)'))" />
-		</ItemGroup>
-		<Message Importance="high" Text="Pointing the package targets at the v0 tasks instead of the package's $(_PackageTasksSuffix) tasks: @(_PackageTasksBoundFile->'%(RecursiveDir)%(Filename)%(Extension)', ', ')" Condition="'@(_PackageTasksBoundFile)' != ''" />
-		<WriteLinesToFile File="%(_PackageTasksBoundFile.FullPath)"
-						  Lines="$([MSBuild]::Escape($([System.IO.File]::ReadAllText('%(_PackageTasksBoundFile.FullPath)').Replace('$(_PackageTasksSuffix)', 'v0').TrimEnd())))"
-						  Overwrite="true"
-						  Condition="'@(_PackageTasksBoundFile)' != ''" />
 		<!-- Keep override cache consistent with current output and incremental for repeated local builds. -->
 		<Delete Files="@(_StaleTargetFiles)" ContinueOnError="true" />
 		<Copy SourceFiles="@(_OutputFiles)" DestinationFiles="@(_OutputDestinationFiles)" SkipUnchangedFiles="true" Retries="1" RetryDelayMilliseconds="500" ContinueOnError="true" />
