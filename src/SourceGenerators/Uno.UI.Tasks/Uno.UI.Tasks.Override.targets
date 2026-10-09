@@ -5,19 +5,27 @@
 		A published package's tasks are built with the commit SHA in place of "v0" (UpdateTasksSHA in build/Uno.UI.Build.csproj): the
 		assembly is Uno.UI.Tasks.<sha>.dll, the task types are named <Task>_<sha>, and the package's targets load them by those names.
 		Locally built tasks keep "v0", so every targets and props file under the package's buildTransitive folder that uses the SHA is
-		switched over to "v0". The SHA is read from the package's Uno.UI.Tasks.targets, which no longer contains it once a previous
-		override has switched it, so repeated overrides leave the files alone.
+		switched over to "v0". The SHA is looked up in each of those files (an assembly name or a task name using it), so files that a
+		previous, possibly interrupted, override already switched are left alone and the remaining ones are still found.
 	-->
 	<Target Name="_UnoPointOverriddenPackageAtLocalTasks" Condition="'$(UnoNugetOverrideVersion)'!=''">
 		<PropertyGroup>
 			<_UnoOverriddenTasksPackageFolder Condition="'$(_UnoOverriddenTasksPackageFolder)'==''">$(NuGetPackageRoot)\uno.winui\$(UnoNugetOverrideVersion)</_UnoOverriddenTasksPackageFolder>
-			<_UnoPackageTasksTargetsFile>$(_UnoOverriddenTasksPackageFolder)\buildTransitive\Uno.UI.Tasks.targets</_UnoPackageTasksTargetsFile>
-			<_UnoPackageTasksSuffix Condition="Exists('$(_UnoPackageTasksTargetsFile)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(_UnoPackageTasksTargetsFile)')), '(?&lt;=Uno\.UI\.Tasks\.)[0-9a-f]{40}(?=\.dll)'))</_UnoPackageTasksSuffix>
 		</PropertyGroup>
 
+		<ItemGroup>
+			<_UnoPackageTasksFile Include="$(_UnoOverriddenTasksPackageFolder)\buildTransitive\**\*.targets;$(_UnoOverriddenTasksPackageFolder)\buildTransitive\**\*.props" />
+			<_UnoPackageTasksSuffixReference Include="$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('%(_UnoPackageTasksFile.FullPath)')), '(?&lt;=Uno\.UI\.Tasks\.|_)[0-9a-f]{40}(?![0-9a-f])'))" />
+		</ItemGroup>
+
+		<PropertyGroup>
+			<_UnoPackageTasksSuffix>@(_UnoPackageTasksSuffixReference->Distinct())</_UnoPackageTasksSuffix>
+		</PropertyGroup>
+
+		<Error Text="The overridden package's targets load Uno.UI.Tasks with more than one commit SHA ($(_UnoPackageTasksSuffix)), they can't be pointed at the v0 tasks." Condition="$(_UnoPackageTasksSuffix.Contains(';'))" />
+
 		<ItemGroup Condition="'$(_UnoPackageTasksSuffix)' != ''">
-			<_UnoPackageTasksBoundFile Include="$(_UnoOverriddenTasksPackageFolder)\buildTransitive\**\*.targets;$(_UnoOverriddenTasksPackageFolder)\buildTransitive\**\*.props" />
-			<_UnoPackageTasksBoundFile Remove="@(_UnoPackageTasksBoundFile)" Condition="!$([System.IO.File]::ReadAllText('%(FullPath)').Contains('$(_UnoPackageTasksSuffix)'))" />
+			<_UnoPackageTasksBoundFile Include="@(_UnoPackageTasksFile)" Condition="$([System.IO.File]::ReadAllText('%(FullPath)').Contains('$(_UnoPackageTasksSuffix)'))" />
 		</ItemGroup>
 
 		<Message Importance="high"
