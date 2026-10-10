@@ -56,6 +56,10 @@
 		// text the TextBox has not seen yet.
 		private static lastSyncedValue: string;
 		private static enterHandledByKeyDown: boolean;
+		// Who has raised the Enter being pressed, for its later events not to raise it again:
+		// BrowserKeyboardInputSource, for a keydown that has the code it tells the key by, or the
+		// beforeinput handler.
+		private static enterRaisedBy: "inputSource" | "lineBreak" | null = null;
 
 		// Android soft keyboards report all key events with keyCode 229 ("Unidentified").
 		// Text changes are synced via the oninput handler instead.
@@ -228,7 +232,14 @@
 					&& BrowserInvisibleTextBoxViewExtension.isCurrentInput(input)) {
 					ev.preventDefault();
 
-					BrowserInvisibleTextBoxViewExtension._exports.OnEnterKeyPressed();
+					// The line break the browser sets out to insert for a key BrowserKeyboardInputSource
+					// raised is not another press of it.
+					if (BrowserInvisibleTextBoxViewExtension.enterRaisedBy === "inputSource") {
+						BrowserInvisibleTextBoxViewExtension.enterRaisedBy = null;
+					} else {
+						BrowserInvisibleTextBoxViewExtension.enterRaisedBy = "lineBreak";
+						BrowserInvisibleTextBoxViewExtension._exports.OnEnterKeyPressed();
+					}
 				}
 			});
 
@@ -449,6 +460,9 @@
 		// the character natively AND via the managed path, producing duplicated input.
 		public static attachTextInputKeyHandlers(input: HTMLInputElement | HTMLTextAreaElement, acceptsReturn: boolean) {
 			input.addEventListener("keydown", (ev: KeyboardEvent) => {
+				// A key press starts here: nothing has raised it yet.
+				BrowserInvisibleTextBoxViewExtension.enterRaisedBy = null;
+
 				// During IME composition, let the browser/IME handle all keys.
 				// stopPropagation prevents BrowserKeyboardInputSource from calling preventDefault.
 				if (ev.isComposing) {
@@ -473,6 +487,11 @@
 				if ((ev.key === "Enter" || ev.keyCode === 13) && !acceptsReturn) {
 					// Don't call preventDefault() to allow the key event to propagate to document listeners
 					BrowserInvisibleTextBoxViewExtension.enterHandledByKeyDown = true;
+					// BrowserKeyboardInputSource tells the key by its code, which a soft keyboard's Enter
+					// lacks: that one is the beforeinput handler's to raise.
+					if (ev.code === "Enter" || ev.code === "NumpadEnter") {
+						BrowserInvisibleTextBoxViewExtension.enterRaisedBy = "inputSource";
+					}
 					return;
 				}
 
@@ -498,13 +517,18 @@
 				if (!acceptsReturn
 					&& ev.key === "Enter"
 					&& !BrowserInvisibleTextBoxViewExtension.enterHandledByKeyDown
+					&& BrowserInvisibleTextBoxViewExtension.enterRaisedBy !== "lineBreak"
 					&& !ev.isComposing) {
 					ev.preventDefault();
+					// OnEnterKeyPressed raises the release along with the press: a keyup that has a code
+					// is not to go on to BrowserKeyboardInputSource for it to raise the release again.
+					ev.stopPropagation();
 					BrowserInvisibleTextBoxViewExtension._exports.OnEnterKeyPressed();
 				}
 
 				if (ev.key === "Enter" || ev.keyCode === 13) {
 					BrowserInvisibleTextBoxViewExtension.enterHandledByKeyDown = false;
+					BrowserInvisibleTextBoxViewExtension.enterRaisedBy = null;
 				}
 
 				if (BrowserInvisibleTextBoxViewExtension.isComposing || BrowserInvisibleTextBoxViewExtension.isSoftKeyboardKey(ev)) {
@@ -634,6 +658,8 @@
 		private static detachCore() {
 			BrowserInvisibleTextBoxViewExtension.detachGeneration++;
 			BrowserInvisibleTextBoxViewExtension.currentHandle = 0;
+			// No line break follows the keydown of an input that is gone.
+			BrowserInvisibleTextBoxViewExtension.enterRaisedBy = null;
 			// Blur explicitly before removing: the .blur() method dispatches synchronously, so it
 			// lands inside the suppression window. WebKit can otherwise defer the implicit blur that
 			// fires on element removal past that window, which would clear the wrong TextBox's focus.
