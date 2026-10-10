@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Private.Infrastructure;
 using Uno.UI.RuntimeTests.Helpers;
 using Windows.System;
@@ -1050,6 +1051,81 @@ public partial class Given_TextBox
 	[TestMethod]
 	[RunsOnUIThread]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	public async Task When_Hardware_Keyboard_Enter_Is_Named_On_Release_After_Line_Break()
+	{
+		var SUT = await LoadFocusedTextBox("abc");
+		var keys = TrackEnterKey(SUT);
+
+		// The line break raised the key, its release included. The keyup has the code the keyboard input source
+		// tells the key by, and is kept from it.
+		DispatchKeyDown("Process", code: "Enter", keyCode: 229);
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "down", "up" }, keys);
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	[DataRow("Process", "KeyA", 229, DisplayName = "A key the IME takes")]
+	[DataRow("Shift", "ShiftLeft", 16, DisplayName = "A modifier")]
+	public async Task When_Another_Key_Goes_Down_Before_Enter_Named_On_Release_After_Line_Break_Is_Released(string otherKey, string otherCode, int otherKeyCode)
+	{
+		var SUT = await LoadFocusedTextBox("abc");
+		var keys = TrackEnterKey(SUT);
+
+		DispatchKeyDown("Process", code: "Enter", keyCode: 229);
+		DispatchBeforeInput("insertLineBreak");
+		try
+		{
+			// The line break raised Enter, which is still down when the next key is pressed: the keyup of Enter is
+			// still not to raise it again.
+			DispatchKeyDown(otherKey, code: otherCode, keyCode: otherKeyCode);
+			DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+			await WindowHelper.WaitForIdle();
+
+			CollectionAssert.AreEqual(new[] { "down", "up" }, keys);
+		}
+		finally
+		{
+			// Leaves the other key released for the tests that follow.
+			DispatchKeyUp(otherKey, code: otherCode, keyCode: otherKeyCode);
+			await WindowHelper.WaitForIdle();
+		}
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	[DataRow("Enter", 13, true, DisplayName = "Enter named on its press")]
+	[DataRow("Process", 229, false, DisplayName = "Enter named on its release only")]
+	public async Task When_Hardware_Keyboard_Enter_Follows_Line_Break_Without_Key_Events(string keyOnPress, int keyCodeOnPress, bool lineBreakFollows)
+	{
+		var SUT = await LoadFocusedTextBox("abc");
+		var keys = TrackEnterKey(SUT);
+
+		// No keyup ends the line break a soft keyboard sent on its own, and the keys typed after it are other keys:
+		// neither keeps the next press of Enter from being raised.
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyDown("a", code: "KeyA", keyCode: 65);
+		DispatchKeyUp("a", code: "KeyA", keyCode: 65);
+
+		DispatchKeyDown(keyOnPress, code: "Enter", keyCode: keyCodeOnPress);
+		if (lineBreakFollows)
+		{
+			DispatchBeforeInput("insertLineBreak");
+		}
+		DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "down", "up", "down", "up" }, keys);
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
 	public async Task When_Hardware_Keyboard_Enter_Released_Without_Press()
 	{
 		var SUT = await LoadFocusedTextBox("abc");
@@ -1188,6 +1264,182 @@ public partial class Given_TextBox
 		Assert.AreEqual(0, keys.Count);
 	}
 
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	[DataRow(true, DisplayName = "Its release goes to the document")]
+	[DataRow(false, DisplayName = "Its release is lost")]
+	public async Task When_Enter_Named_On_Release_After_Line_Break_Moves_Focus_Off_The_TextBox(bool isReleased)
+	{
+		var SUT = new TextBox();
+		var button = new Button { Content = "Next" };
+		SUT.KeyDown += (_, e) =>
+		{
+			if (e.Key == VirtualKey.Enter)
+			{
+				button.Focus(FocusState.Keyboard);
+			}
+		};
+		var panel = new StackPanel { Children = { SUT, button } };
+		await UITestHelper.Load(panel);
+		await FocusHiddenInput(SUT);
+
+		// The Enter key events of both controls, the ones a Button handles included.
+		var keys = new List<string>();
+		panel.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, e) => AddEnterKey(e, "down")), handledEventsToo: true);
+		panel.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler((_, e) => AddEnterKey(e, "up")), handledEventsToo: true);
+
+		// The line break raises the key, its release included, and the press moves focus off the TextBox: its input
+		// is gone by the keyup, which the browser sends to the document.
+		DispatchKeyDown("Process", code: "Enter", keyCode: 229);
+		DispatchBeforeInput("insertLineBreak");
+		await WindowHelper.WaitForIdle();
+		Assert.IsFalse(HiddenInputExists(), "The hidden native input should be gone once focus is on the button.");
+
+		if (isReleased)
+		{
+			DispatchKeyUpOnDocument("Enter", code: "Enter", keyCode: 13);
+			await WindowHelper.WaitForIdle();
+		}
+
+		// The release was raised with the press: the control that took focus does not get it again.
+		CollectionAssert.AreEqual(new[] { "down", "up" }, keys);
+
+		// The next press of the key, on that control, is raised in full.
+		DispatchKeyDownOnDocument("Enter", code: "Enter", keyCode: 13);
+		DispatchKeyUpOnDocument("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "down", "up", "down", "up" }, keys);
+
+		void AddEnterKey(KeyRoutedEventArgs e, string name)
+		{
+			if (e.Key == VirtualKey.Enter)
+			{
+				keys.Add(name);
+			}
+		}
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	public async Task When_Enter_And_Numpad_Enter_Presses_Overlap()
+	{
+		var SUT = await LoadFocusedTextBox("abc");
+		var keys = TrackEnterKey(SUT);
+
+		// Two keys, two presses: the release of the first does not leave the second to be raised again.
+		DispatchKeyDown("Enter", code: "Enter", keyCode: 13);
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyDown("Enter", code: "NumpadEnter", keyCode: 13);
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+		DispatchKeyUp("Enter", code: "NumpadEnter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "down", "down", "up", "up" }, keys);
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	[DataRow(true, DisplayName = "A soft keyboard's, named on its release only")]
+	[DataRow(false, DisplayName = "One the input only gets the release of")]
+	public async Task When_Enter_Named_On_Release_Only_Follows_Hardware_Keyboard_Enter_That_Moved_Focus(bool softKeyboard)
+	{
+		var first = new TextBox();
+		var button = new Button { Content = "Next" };
+		var second = new TextBox();
+		first.KeyDown += (_, e) =>
+		{
+			if (e.Key == VirtualKey.Enter)
+			{
+				button.Focus(FocusState.Keyboard);
+			}
+		};
+		await UITestHelper.Load(new StackPanel { Children = { first, button, second } });
+		await FocusHiddenInput(first);
+
+		// The press moves focus off the TextBox: its input is removed, and the release goes to the document.
+		DispatchKeyDown("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+		Assert.IsFalse(HiddenInputExists(), "The hidden native input should be gone once focus is on the button.");
+		DispatchKeyUpOnDocument("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		await FocusHiddenInput(second);
+		var keys = TrackEnterKey(second);
+
+		// The press on the first TextBox is over: an Enter the next one only learns of by its keyup is raised.
+		if (softKeyboard)
+		{
+			DispatchKeyDown("Unidentified", code: "", keyCode: 229);
+			DispatchKeyUp("Enter", code: "", keyCode: 13);
+		}
+		else
+		{
+			// The fallback of the keyup handler raises a keyup named Enter that no keydown was seen for.
+			DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+		}
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "down", "up" }, keys);
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	public async Task When_Hardware_Keyboard_Enter_Is_Held()
+	{
+		var SUT = await LoadFocusedTextBox("abc");
+		var keys = TrackEnterKey(SUT);
+
+		// Each repeat is a keydown of the same key with its own line break: none of them is another press.
+		DispatchKeyDown("Enter", code: "Enter", keyCode: 13);
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyDown("Enter", code: "Enter", keyCode: 13);
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "down", "down", "up" }, keys);
+	}
+
+	[TestMethod]
+	[RunsOnUIThread]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWasm)]
+	public async Task When_Hardware_Keyboard_Enter_Pressed_On_Another_Control_Is_Released_On_The_TextBox()
+	{
+		var button = new Button { Content = "Edit" };
+		var SUT = new TextBox();
+		// A Button handles the KeyDown of Enter itself.
+		button.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, e) =>
+		{
+			if (e.Key == VirtualKey.Enter)
+			{
+				SUT.Focus(FocusState.Keyboard);
+			}
+		}), handledEventsToo: true);
+		await UITestHelper.Load(new StackPanel { Children = { button, SUT } });
+		button.Focus(FocusState.Keyboard);
+		await WindowHelper.WaitForIdle();
+		var keys = TrackEnterKey(SUT);
+
+		// The press starts on the button, whose keydown goes to the document, and moves focus to the TextBox.
+		DispatchKeyDownOnDocument("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+		Assert.IsTrue(HiddenInputExists(), "The hidden native input should be attached once focus is on the TextBox.");
+
+		// The TextBox gets the release of that press, and no press of its own for it: neither for the line break
+		// the browser sets out to insert for that keydown, nor for the keyup.
+		DispatchBeforeInput("insertLineBreak");
+		DispatchKeyUp("Enter", code: "Enter", keyCode: 13);
+		await WindowHelper.WaitForIdle();
+
+		CollectionAssert.AreEqual(new[] { "up" }, keys);
+	}
+
 	private static async Task<TextBox> LoadFocusedTextBox(string text, int? caret = null)
 	{
 		var textBox = new TextBox { Text = text };
@@ -1282,6 +1534,14 @@ public partial class Given_TextBox
 
 	private static void DispatchKeyUp(string key, string code, int keyCode)
 		=> InvokeBrowserJs($"(function(){{ {HiddenInput}.dispatchEvent(new KeyboardEvent('keyup', {{ key: {JsString(key)}, code: {JsString(code)}, keyCode: {keyCode}, bubbles: true, cancelable: true }})); return ''; }})()");
+
+	// A keydown the browser sends to the document, as when no text input has focus.
+	private static void DispatchKeyDownOnDocument(string key, string code, int keyCode)
+		=> InvokeBrowserJs($"(function(){{ document.body.dispatchEvent(new KeyboardEvent('keydown', {{ key: {JsString(key)}, code: {JsString(code)}, keyCode: {keyCode}, bubbles: true, cancelable: true }})); return ''; }})()");
+
+	// A keyup the browser sends to the document, as for a key whose input is gone.
+	private static void DispatchKeyUpOnDocument(string key, string code, int keyCode)
+		=> InvokeBrowserJs($"(function(){{ document.body.dispatchEvent(new KeyboardEvent('keyup', {{ key: {JsString(key)}, code: {JsString(code)}, keyCode: {keyCode}, bubbles: true, cancelable: true }})); return ''; }})()");
 
 	private static void DispatchBeforeInput(string inputType)
 		=> InvokeBrowserJs($"(function(){{ {HiddenInput}.dispatchEvent(new InputEvent('beforeinput', {{ inputType: '{inputType}', bubbles: true, cancelable: true }})); return ''; }})()");
