@@ -160,6 +160,12 @@ internal partial class BrowserInvisibleTextBoxViewExtension : IOverlayTextBoxVie
 
 	internal static void DetachNativeInputPreservingFocus() => NativeMethods.Detach();
 
+	/// <summary>
+	/// A TextBox took focus or, having it already, was tapped: on iOS the native input is focused again, which
+	/// brings up the soft keyboard a focus set from code did not get.
+	/// </summary>
+	internal static void RefocusNativeInput() => NativeMethods.Refocus();
+
 	public void UpdateSize()
 	{
 		if (!_view.TextBox?.IsFocused ?? true)
@@ -308,6 +314,9 @@ internal partial class BrowserInvisibleTextBoxViewExtension : IOverlayTextBoxVie
 
 		[JSImport("globalThis.Uno.UI.Runtime.Skia.BrowserInvisibleTextBoxViewExtension.detach")]
 		public static partial void Detach();
+
+		[JSImport("globalThis.Uno.UI.Runtime.Skia.BrowserInvisibleTextBoxViewExtension.refocus")]
+		public static partial void Refocus();
 
 		[JSImport("globalThis.Uno.UI.Runtime.Skia.BrowserInvisibleTextBoxViewExtension.hasInput")]
 		public static partial bool HasInput();
