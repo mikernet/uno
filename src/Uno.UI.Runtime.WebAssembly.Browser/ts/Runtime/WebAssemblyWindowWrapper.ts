@@ -159,8 +159,14 @@
 
 			let bootstrapperLoaders = document.getElementsByClassName(WebAssemblyWindowWrapper.unoPersistentLoaderClassName);
 			if (bootstrapperLoaders.length > 0) {
-				let bootstrapperLoader = bootstrapperLoaders[0] as HTMLElement;
-				bootstrapperLoader.parentElement.removeChild(bootstrapperLoader);
+				// Newer bootstrappers fade the loader out themselves; older ones don't expose dismissLoader.
+				const dismissLoader = (globalThis as any).Uno?.WebAssembly?.Bootstrap?.Bootstrapper?.dismissLoader;
+				if (typeof dismissLoader === "function") {
+					dismissLoader();
+				} else {
+					let bootstrapperLoader = bootstrapperLoaders[0] as HTMLElement;
+					bootstrapperLoader.parentElement.removeChild(bootstrapperLoader);
+				}
 			}
 		}
 
@@ -178,6 +184,21 @@
 
 		public static getCanvasId(owner: any): string {
 			return WebAssemblyWindowWrapper.getInstance(owner).canvasElement.id;
+		}
+
+		public static getSearchParams(): string {
+			if (typeof URLSearchParams === "function") {
+				return new URLSearchParams(window.location.search).toString();
+			}
+			else {
+				const queryIndex = document.location.search.indexOf("?");
+
+				if (queryIndex !== -1) {
+					return document.location.search.substring(queryIndex + 1);
+				}
+
+				return "";
+			}
 		}
 
 		private resize() {

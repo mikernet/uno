@@ -18,9 +18,6 @@
     <Project Path="AddIns/Uno.UI.GooglePlay/Uno.UI.GooglePlay.netcoremobile.csproj">
       <BuildType Solution="Release_NoSamples|*" Project="Release" />
     </Project>
-    <Project Path="AddIns/Uno.UI.Lottie/Uno.UI.Lottie.csproj">
-      <BuildType Solution="Release_NoSamples|*" Project="Release" />
-    </Project>
     <Project Path="AddIns/Uno.UI.MediaPlayer.Win32/Uno.UI.MediaPlayer.Win32.csproj">
       <BuildType Solution="Release_NoSamples|*" Project="Debug" />
     </Project>
@@ -163,6 +160,9 @@
       <Platform Solution="*|ARM" Project="x64" />
       <Platform Solution="*|iPhone" Project="x64" />
       <Platform Solution="*|iPhoneSimulator" Project="x64" />
+    </Project>
+    <Project Path="Tools/RichEditBoxUiaClient/RichEditBoxUiaClient.csproj">
+      <Build Project="false" />
     </Project>
     <Project Path="Uno.NUnitTransformTool/Uno.NUnitTransformTool.csproj">
       <BuildType Solution="Release_NoSamples|*" Project="Release" />

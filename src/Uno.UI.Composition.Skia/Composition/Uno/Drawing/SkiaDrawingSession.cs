@@ -91,7 +91,9 @@ internal class SkiaDrawingSession : IDrawingSession
 		opacityPaint?.Dispose();
 	}
 
-	public Matrix4x4 TotalMatrix => _canvas.TotalMatrix.ToMatrix4x4();
+	// Read back the full 4x4 SetMatrix stored: the 3x3 TotalMatrix drops the Z row and column, so a
+	// flattening transform (M33 = 0, as AnimatedVisuals produce) would come back as M33 = 1.
+	public Matrix4x4 TotalMatrix => _canvas.TotalMatrix44;
 
 	public void SetMatrix(in Matrix4x4 matrix)
 	{
@@ -174,17 +176,33 @@ internal class SkiaDrawingSession : IDrawingSession
 			return;
 		}
 
+		DrawTextBlob(skiaFont, glyphs, positions, baselineY, FillPaint(color));
+	}
+
+	public void StrokeGlyphRun(IFont font, ReadOnlySpan<ushort> glyphs, ReadOnlySpan<Vector2> positions, float baselineY, Color color, float strokeWidth)
+	{
+		if (font is not SkiaFont skiaFont)
+		{
+			GlyphRunRenderer.Stroke(this, font, glyphs, positions, baselineY, color, strokeWidth);
+			return;
+		}
+
+		DrawTextBlob(skiaFont, glyphs, positions, baselineY, StrokePaint(color, strokeWidth));
+	}
+
+	private void DrawTextBlob(SkiaFont font, ReadOnlySpan<ushort> glyphs, ReadOnlySpan<Vector2> positions, float baselineY, SKPaint paint)
+	{
 		if (glyphs.IsEmpty)
 		{
 			return;
 		}
 
 		var builder = _textBlobBuilder ??= new SKTextBlobBuilder();
-		builder.AddPositionedRun(glyphs, skiaFont.NativeFont, MemoryMarshal.Cast<Vector2, SKPoint>(positions));
+		builder.AddPositionedRun(glyphs, font.NativeFont, MemoryMarshal.Cast<Vector2, SKPoint>(positions));
 		using var blob = builder.Build();
 		if (blob is not null)
 		{
-			_canvas.DrawText(blob, 0, baselineY, FillPaint(color));
+			_canvas.DrawText(blob, 0, baselineY, paint);
 		}
 	}
 

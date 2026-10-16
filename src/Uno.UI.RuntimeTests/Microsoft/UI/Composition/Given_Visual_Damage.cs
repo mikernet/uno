@@ -640,7 +640,9 @@ public class Given_Visual_Damage
 #if __SKIA__
 	private static void RenderFrame(ContainerVisual root, DamageRegion damage)
 	{
-		var recording = DrawingFactory.Current.CreateRecording();
+		// The detached tree under test renders with the main window's backend: nothing process-wide holds one.
+		var factory = Private.Infrastructure.TestServices.WindowHelper.XamlRoot!.VisualTree.RootElement!.Visual.CompositionTarget!.Renderer!;
+		var recording = factory.CreateRecording();
 		FrameRenderHelper.RecordFrame(recording, 200, 200, root, invertPath: false, damage: damage);
 		recording.Finish()?.Dispose();
 	}
@@ -683,6 +685,14 @@ public class Given_Visual_Damage
 		}
 
 		public void RequestNewFrame() { }
+
+		public event EventHandler<long> FrameStarting
+		{
+			add { }
+			remove { }
+		}
+
+		public long FrameIntervalInTicks => TimeSpan.TicksPerSecond / 60;
 
 		public void AddDamage(Rect bounds) => Damage.Add(bounds);
 

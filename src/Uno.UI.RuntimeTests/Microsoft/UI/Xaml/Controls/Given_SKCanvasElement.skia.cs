@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
@@ -45,7 +46,7 @@ public class Given_SKCanvasElement
 		// A backend without a native SKCanvas (WebGPU) draws through a GL island that comes up a few frames after load;
 		// its output composites on the frame after its first render.
 		await UITestHelper.WaitFor(() => SUT.Rendered, timeoutMS: 5000);
-		await UITestHelper.WaitForRender(2);
+		await UITestHelper.WaitForRender(2, timeoutMS: 5000);
 
 		var bitmap = await UITestHelper.ScreenShot(border);
 
@@ -103,7 +104,18 @@ public class Given_SKCanvasElement
 	public void When_Graphics3DGL_Not_Referenced_By_Graphics2DSK()
 	{
 		// AOT and eager linkers (Android AOT, .NET 11 iOS CoreTypeMap) fail on a reference the package doesn't carry.
-		var references = typeof(SKCanvasElement).Assembly.GetReferencedAssemblies();
+		System.Reflection.AssemblyName[] references;
+		try
+		{
+			references = typeof(SKCanvasElement).Assembly.GetReferencedAssemblies();
+		}
+		catch (PlatformNotSupportedException) when (!RuntimeFeature.IsDynamicCodeSupported)
+		{
+			// NativeAOT keeps no assembly references; the JIT platforms check the same assembly. On those, the
+			// exception would be unexpected, so it still fails the test there.
+			Assert.Inconclusive("Assembly references are not available on this runtime (NativeAOT).");
+			return;
+		}
 
 		Assert.IsFalse(
 			references.Any(r => r.Name is "Uno.WinUI.Graphics3DGL" or "Silk.NET.OpenGL"),
@@ -167,6 +179,70 @@ public class Given_SKCanvasElement
 		public void Destroy() { }
 
 		public void OnUnavailable() => Unavailable = true;
+	}
+
+	[TestMethod]
+	public async Task When_Invalidated_From_Background_Thread()
+	{
+		if (OperatingSystem.IsBrowser())
+		{
+			Assert.Inconclusive("This test requires a multithreaded environment.");
+		}
+
+		// Invalidating disposes this visual's cached recording and those of its ancestors, so doing it
+		// off the UI thread can free a picture the render thread is replaying. The element redraws
+		// continuously here to keep frames in flight while other threads invalidate.
+		//
+		// This covers the supported call pattern rather than the race itself: the window is too
+		// narrow to hit reliably on demand, and this passed even before Invalidate marshalled.
+		var SUT = new CountingSKCanvasElement { Width = 400, Height = 400 };
+		await UITestHelper.Load(SUT);
+		await UITestHelper.WaitFor(() => SUT.RenderCount > 0, timeoutMS: 5000);
+
+		var before = SUT.RenderCount;
+		using var cts = new CancellationTokenSource();
+		var workers = Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+		{
+			while (!cts.IsCancellationRequested)
+			{
+				SUT.Invalidate();
+			}
+		})).ToArray();
+
+		try
+		{
+			await Task.Delay(2000);
+		}
+		finally
+		{
+			await cts.CancelAsync();
+			await Task.WhenAll(workers);
+		}
+
+		Assert.IsTrue(SUT.RenderCount > before, "the element should have kept rendering");
+	}
+
+	private class CountingSKCanvasElement : SKCanvasElement
+	{
+		private readonly SKPaint _paint = new() { Color = SKColors.Blue };
+		private int _renderCount;
+
+		public int RenderCount => Volatile.Read(ref _renderCount);
+
+		protected override void RenderOverride(SKCanvas canvas, Size area)
+		{
+			Interlocked.Increment(ref _renderCount);
+
+			// Paint enough that recording and replaying a frame is not instant, which keeps the
+			// window the invalidating threads are racing against open. Deliberately does not
+			// self-invalidate: that would keep the render loop hot after the test and stop anything
+			// waiting for idle afterwards from ever settling.
+			for (var i = 0; i < 100; i++)
+			{
+				_paint.Color = new SKColor((byte)i, (byte)(255 - i), 0x80);
+				canvas.DrawRect(new SKRect(i % 50, i % 50, (float)area.Width, (float)area.Height), _paint);
+			}
+		}
 	}
 
 	private class BlueFillSKCanvasElement : SKCanvasElement

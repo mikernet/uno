@@ -78,12 +78,27 @@
 	     evaluated BEFORE its DependsOnTargets run, so it would still be empty here — the task-level conditions below
 	     (evaluated after _SelectWgpuAsset has run) are the correct guard. -->
 	<Target Name="_FetchWgpuNative" DependsOnTargets="_SelectWgpuAsset">
-		<MakeDir Directories="$(WgpuNativeCacheDir)" Condition="'$(_WgpuAsset)' != ''" />
-		<DownloadFile Condition="'$(_WgpuAsset)' != '' And !Exists('$(WgpuNativeCacheDir)$(_WgpuAsset)')"
+		<!-- Every project importing this file, and each of its target frameworks, shares the cache, so a cold parallel
+		     build fetches it several times at once: writing the same zip concurrently failed with "being used by another
+		     process". Each fetch downloads and unzips into its own staging folder and only copies the result in. -->
+		<PropertyGroup>
+			<_WgpuNeedsFetch Condition="'$(_WgpuAsset)' != '' And !Exists('$(WgpuNativeCacheDir)lib\$(_WgpuNativeFile)')">true</_WgpuNeedsFetch>
+			<_WgpuStageDir>$(WgpuNativeCacheDir)stage\$([System.Guid]::NewGuid().ToString('N'))\</_WgpuStageDir>
+		</PropertyGroup>
+		<MakeDir Directories="$(_WgpuStageDir)" Condition="'$(_WgpuNeedsFetch)' == 'true'" />
+		<DownloadFile Condition="'$(_WgpuNeedsFetch)' == 'true'"
 			SourceUrl="https://github.com/gfx-rs/wgpu-native/releases/download/$(WgpuNativeVersion)/$(_WgpuAsset)"
-			DestinationFolder="$(WgpuNativeCacheDir)" Retries="3" />
-		<Microsoft.Build.Tasks.Unzip Condition="'$(_WgpuAsset)' != '' And !Exists('$(WgpuNativeCacheDir)lib\$(_WgpuNativeFile)')"
-			SourceFiles="$(WgpuNativeCacheDir)$(_WgpuAsset)" DestinationFolder="$(WgpuNativeCacheDir)" />
+			DestinationFolder="$(_WgpuStageDir)" Retries="3" />
+		<Microsoft.Build.Tasks.Unzip Condition="'$(_WgpuNeedsFetch)' == 'true'"
+			SourceFiles="$(_WgpuStageDir)$(_WgpuAsset)" DestinationFolder="$(_WgpuStageDir)" />
+		<ItemGroup Condition="'$(_WgpuNeedsFetch)' == 'true'">
+			<_WgpuStagedFile Include="$(_WgpuStageDir)**\*" Exclude="$(_WgpuStageDir)$(_WgpuAsset)" />
+		</ItemGroup>
+		<!-- Unzip keeps the archive's timestamps, so a fetch that lost the race skips the files the winner copied. -->
+		<Copy Condition="'$(_WgpuNeedsFetch)' == 'true'" SourceFiles="@(_WgpuStagedFile)"
+			DestinationFiles="@(_WgpuStagedFile->'$(WgpuNativeCacheDir)%(RecursiveDir)%(Filename)%(Extension)')"
+			SkipUnchangedFiles="true" Retries="10" RetryDelayMilliseconds="500" />
+		<RemoveDir Condition="'$(_WgpuNeedsFetch)' == 'true'" Directories="$(_WgpuStageDir)" ContinueOnError="true" />
 	</Target>
 
 	<!-- Packaging provisions every RID the package ships, not just the build host's: the packages job runs on one
@@ -124,10 +139,11 @@
 	     app straight out of bin/. Guard on OutDir (AfterTargets=Build also fires in the outer multi-TFM pass where
 	     OutDir is empty → an unguarded Copy throws MSB3023). Only for app heads (OutputType != Library): a referenced
 	     library would otherwise leave a loose desktop .so next to its dll, which .NET-Android harvests transitively and
-	     packs into every APK lib/<abi>/, shadowing the real per-ABI bionic binaries (dlopen then fails on libdl.so.2). -->
-	<Target Name="ProvisionWgpuNative" AfterTargets="Build" DependsOnTargets="_FetchWgpuNative">
+	     packs into every APK lib/<abi>/, shadowing the real per-ABI bionic binaries (dlopen then fails on libdl.so.2).
+	     The Library check sits on the target so a library never fetches a native it would not copy. -->
+	<Target Name="ProvisionWgpuNative" AfterTargets="Build" DependsOnTargets="_FetchWgpuNative" Condition="'$(OutputType)' != 'Library'">
 		<Message Importance="high" Text="ProvisionWgpuNative: asset=$(_WgpuAsset) outputType=$(OutputType) -> $(OutDir)$(_WgpuOutputFile)" />
-		<Copy Condition="'$(_WgpuAsset)' != '' And '$(OutDir)' != '' And '$(OutputType)' != 'Library' And '$(_UnoWebGpuNativeUnused)' != 'true'"
+		<Copy Condition="'$(_WgpuAsset)' != '' And '$(OutDir)' != '' And '$(_UnoWebGpuNativeUnused)' != 'true'"
 			SourceFiles="$(WgpuNativeCacheDir)lib\$(_WgpuNativeFile)" DestinationFiles="$(OutDir)$(_WgpuOutputFile)" SkipUnchangedFiles="true" />
 	</Target>
 

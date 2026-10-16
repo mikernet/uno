@@ -200,6 +200,17 @@ To fix this issue:
 </ItemGroup>
 ```
 
+### UNOB0022: The `SingleProject` property is no longer supported
+
+`SingleProject` was the Uno Platform 5.1-and-earlier spelling of `UnoSingleProject`. It no longer selects the single-project layout, so leaving it in place would silently build the project as if it were not a single project.
+
+Rename the property in your `.csproj`:
+
+```diff
+- <SingleProject>true</SingleProject>
++ <UnoSingleProject>true</UnoSingleProject>
+```
+
 ### UNOB0023: A runtime-enabled package provided no runtime assembly
 
 Packages such as `Uno.WinRT` and `Uno.Foundation` ship a platform-neutral compile surface under `lib/` and the assemblies that actually run under `uno-runtime/`. This diagnostic reports that one of them contributed no runtime assembly for the target framework being built, which means the reference assemblies would be deployed instead and every call into them would throw `NotImplementedException` at runtime.
@@ -284,6 +295,34 @@ Uno Platform 7.0 removed the `*.Apple.cs`, `*.iOSmacOS.cs`, and `*.reference.cs`
 
 `*.skia.cs` is still recognized, but it now compiles for every target framework except the WinAppSDK one, not only for `netX.0-desktop`. See [Platform targeting in multi-targeted libraries](xref:Uno.Development.MigratingToUno7) for the other changes.
 
+### UNOB0029: Uno Platform application projects must use the Uno.Sdk
+
+Starting with Uno Platform 7.0, an application must be built with the [`Uno.Sdk`](xref:Uno.Features.Uno.Sdk). The legacy project format — a `Microsoft.NET.Sdk` project referencing the `Uno.WinUI` package, together with one head project per platform (`MyApp.Mobile`, `MyApp.Wasm`, `MyApp.Skia.Gtk`, `MyApp.Windows`, …) — is no longer supported.
+
+To fix this, migrate your application to the Uno.Sdk by following the [Migrating Projects to Single Project](xref:Uno.Development.MigratingToSingleProject) guide.
+
+This diagnostic is only raised for application projects (`Exe` and `WinExe`). Class libraries that reference the `Uno.WinUI` package directly are not affected, and neither are Windows App SDK heads or test projects (`IsTestProject` set to `true`, which `Microsoft.NET.Test.Sdk` and the common test runners do for you).
+
+If your project is an executable that merely links `Uno.WinUI` as a library — a console harness or a benchmark runner, for instance — disable the check:
+
+```xml
+<PropertyGroup>
+  <UnoDisableUNOB0029Validation>true</UnoDisableUNOB0029Validation>
+</PropertyGroup>
+```
+
+### UNOB0028: The UnoSplashScreenColor property is no longer supported
+
+Uno Platform 7.0 removed the `UnoSplashScreenColor` property. The Uno.SDK ignores it, so the splash screen background falls back to its default (`#FFFFFF`, or the browser theme on WebAssembly). Rename it:
+
+```xml
+<PropertyGroup>
+  <UnoSplashScreenBackgroundColor>#FFFFFF</UnoSplashScreenBackgroundColor>
+</PropertyGroup>
+```
+
+The same applies to `UnoSplashScreen` items declared by hand: use `BackgroundColor="#FFFFFF"` instead of `Color="#FFFFFF"`. See [Splash screen](xref:Uno.Development.SplashScreen) for the related `UnoSplashScreenDarkBackgroundColor` and `UnoSplashScreenDarkFile` properties.
+
 ## Compiler Errors
 
 ### UNO0001
@@ -331,6 +370,7 @@ Note that this change only applies to projects using the Uno.Sdk. If you're not 
 ```xml
 #pragma warning disable UNO0008 // Replace with UseStudio() when migrating to the Uno.Sdk.
 window.EnableHotReload();
+
 #pragma warning restore UNO0008
 ```
 
@@ -379,6 +419,17 @@ Uno Platform 7.0 names every conditional XAML prefix after a target framework, a
 
 The diagnostic is raised on the `xmlns` declaration. The same names remain valid as ordinary namespace aliases, so a declaration using the `using:` form — for instance `xmlns:skia="using:SkiaSharp.Views.Windows"` or `xmlns:legacy="using:Uno.UI.Controls.Legacy"` — is not reported. `legacy` is only reported when it is listed in `mc:Ignorable`, which is where it used to act as a condition. See [Removed XAML prefixes](xref:Uno.Development.MigratingToUno7#removed-xaml-prefixes).
 
+### UNOB0028: An optional implicit package was skipped
+
+Some packages the Uno.Sdk adds implicitly are optional and only exist from a given version of their package group. `Uno.HotTesting.Reactive`, added for the `MVUX` feature in non-optimized builds, first ships with the 7.4 builds of Uno.Extensions. This message means the Uno.Extensions version resolved for your project is older than that, is a floating version or a range, or is missing from the Uno.Sdk package manifest, so the package was left out instead of being restored at a mismatched version.
+
+The rest of the build is unaffected. If you need the package:
+
+- Use an `UnoExtensionsVersion` of 7.4 or later, as an exact version, or
+- Reference the package explicitly with a version that matches your Uno.Extensions packages.
+
+To stop the Uno.Sdk from adding it at all, set `UnoDisableHotTesting` to `true`.
+
 ## VS Code Errors
 
 ### UVSC0001
@@ -401,3 +452,16 @@ With version 0.14 (and later) you can override the location of `msbuild.exe` by:
 1. Setting the location where your `msbuild.exe` is located
 
 ![settings](Assets/quick-start/vs-code-settings-msbuild.png)
+
+## Hot Reload Errors
+
+### UNOHR0001
+
+The compiler could not produce a Hot Reload update for a change: the C# compiler failed with an exception while emitting the update, instead of reporting the change as unsupported. The DevServer reports it as a rude edit, and the exception is in the DevServer log.
+
+The change was not applied, and the running app is unaffected. Hot Reload stays on the last version it applied, so to keep going:
+
+- Undo the change and save. Hot Reload reports no changes, and the following edits apply as usual.
+- Or restart the app to pick up the change.
+
+A known cause is [dotnet/roslyn#86045](https://github.com/dotnet/roslyn/issues/86045): adding or changing an async lambda that awaits a `dynamic` value. Uno.Extensions MVUX generated such code for commands before [unoplatform/uno.extensions#3227](https://github.com/unoplatform/uno.extensions/issues/3227), so changing a command's parameters could trigger it.

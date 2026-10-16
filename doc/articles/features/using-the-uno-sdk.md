@@ -100,20 +100,19 @@ Here are the supported features:
 | `Localization`       | Adds support for [Localization](xref:Uno.Extensions.Localization.Overview) using [Uno.Extensions](xref:Uno.Extensions.Overview).                                                                                                           |
 | `Logging`            | Adds support for [Logging](xref:Uno.Extensions.Logging.Overview) using [Uno.Extensions](xref:Uno.Extensions.Overview).                                                                                                                     |
 | `LoggingSerilog`     | Adds support for [Serilog](https://github.com/serilog/serilog) using [Uno.Extensions](xref:Uno.Extensions.Overview).                                                                                                                       |
-| `Lottie`             | Adds support for [Lottie animations](xref:Uno.Features.Lottie).                                                                                                                                                                            |
 | `Material`           | Adds support for the [Material Design Theme](xref:Uno.Themes.Material.GetStarted) library. If the `Toolkit` feature is also used, it will add support for the [Material Design Toolkit](xref:Toolkit.GettingStarted.Material) library.     |
 | `MauiEmbedding`      | Adds support for [embedding Maui controls in Uno Platform applications](xref:Uno.Extensions.Maui.Overview).                                                                                                                                |
 | `MediaPlayerElement`       | Adds native references where needed to use [MediaPlayerElement](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.mediaplayerelement).                                                                                                |
 | `Mvvm`               | Adds support for the [CommunityToolkit.Mvvm](https://www.nuget.org/packages/CommunityToolkit.Mvvm) package.                                                                                                                                |
-| `MVUX`               | Adds support for [MVUX](xref:Uno.Extensions.Mvux.Overview).                                                                                                                                                                                |
+| `MVUX`               | Adds support for [MVUX](xref:Uno.Extensions.Mvux.Overview). Non-optimized builds also reference `Uno.HotTesting.Reactive`; see [MVUX feed mocks](#mvux-feed-mocks-in-non-optimized-builds).                              |
 | `Navigation`         | Adds support for [Navigation](xref:Uno.Extensions.Navigation.Overview) using [Uno.Extensions](xref:Uno.Extensions.Overview).                                                                                                               |
 | `Prism`              | Adds [Prism](https://github.com/PrismLibrary/Prism) support for Uno Platform applications WinUI.                                                                                                                                           |
 | `Serialization`      | Adds support for [Serialization](xref:Uno.Extensions.Serialization.Overview) using [Uno.Extensions](xref:Uno.Extensions.Overview).                                                                                                         |
 | `SimpleTheme`        | Adds support for the [Simple Design Theme](xref:Uno.Themes.Simple.GetStarted) library. If the `Toolkit` feature is also used, it will add support for the Simple Design Toolkit library.                                                    |
-| `Skia`               | Adds support for [SkiaSharp](https://github.com/mono/SkiaSharp) — the default rendering backend on Uno Platform targets. It is implied even when not listed, and the legacy `SkiaRenderer` feature is mapped to it for backwards compatibility. The WinAppSDK target is not provided by Uno Platform and always renders natively with WinUI. For more details, see [Skia Rendering documentation](xref:uno.features.renderer.skia). |
+| `Skia`               | Adds support for [SkiaSharp](https://github.com/mono/SkiaSharp) — the default rendering backend on Uno Platform targets. It is implied on Uno Platform targets even when not listed, and the legacy `SkiaRenderer` feature is mapped to it for backwards compatibility. The WinAppSDK target is not provided by Uno Platform and always renders natively with WinUI, so `Skia` is not implied there: list it to use [`SKCanvasElement`](xref:Uno.Controls.SKCanvasElement) or the Uno Toolkit's Skia controls on Windows. For more details, see [Skia Rendering documentation](xref:uno.features.renderer.skia). |
 | `SpellChecking`      | Adds support for [spell-checking](xref:Uno.Features.SpellChecking) in TextBox controls on all Skia-based targets via [Uno.WinUI.SpellChecking](https://www.nuget.org/packages/Uno.WinUI.SpellChecking).                                    |
 | `Storage`            | Adds support for [Storage](xref:Uno.Extensions.Storage.Overview) using [Uno.Extensions](xref:Uno.Extensions.Overview).                                                                                                                     |
-| `Svg`                | [SVG](xref:Uno.Features.SVG) support for iOS, and Android. This option is not needed when only targeting WebAssembly and WinAppSDK.                                                                                          |
+| `Svg`                | Renders [SVG](xref:Uno.Features.SVG) with Svg.Skia, through [Uno.WinUI.Svg](https://www.nuget.org/packages/Uno.WinUI.Svg), instead of the managed SVG engine built into Uno Platform. Applies to apps using the Skia renderer, and has no effect on Windows (WinAppSDK), where the OS renders SVG. |
 | `ThemeService`       | Adds the [Uno.Extensions.Core.WinUI package](https://www.nuget.org/packages/Uno.Extensions.Core.WinUI).                                                                                                                                    |
 | `Toolkit`            | Adds support for the [Uno.Toolkit](xref:Toolkit.GettingStarted).                                                                                                                                                                           |
 | `WebView`            | Adds support for the [WebView2 control](xref:Uno.Controls.WebView2).
@@ -172,6 +171,7 @@ Here are the supported properties:
 | `MicrosoftWebView2Version`          | [Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2)                                      | Overrides the version of the native WebView2Loader used by the `webview` UnoFeature on desktop.                |
 | `PrismVersion`                      | [Prism.Uno.WinUI](https://www.nuget.org/packages/Prism.Uno.WinUI) and similar packages                               | Integrates the Prism library, which aids in building loosely coupled, maintainable, and testable applications. |
 | `SkiaSharpVersion`                  | [SkiaSharp.Skottie](https://www.nuget.org/packages/SkiaSharp.Skottie) and similar packages                           | Provides a cross-platform 2D graphics API for .NET platforms based on Google's Skia Graphics Library.          |
+| `HarfBuzzSharpVersion`              | [HarfBuzzSharp.NativeAssets.*](https://www.nuget.org/packages?q=HarfBuzzSharp.NativeAssets)                           | The HarfBuzz text-shaping native libraries, referenced for each target.                                        |
 | `SvgSkiaVersion`                    | [Svg.Skia](https://www.nuget.org/packages/Svg.Skia)                                                                  | Renders SVG files using the SkiaSharp graphics engine.                                                         |
 | `VlcNativeWindowsAssetsVersion`     | [VideoLAN.LibVLC.Windows](https://www.nuget.org/packages/VideoLAN.LibVLC.Windows)                                    | Overrides the version of the native VLC assets used by `MediaPlayerElement` on Windows desktop.                |
 | `WinAppSdkBuildToolsVersion`        | [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools)                  | Contains the tools required to build applications for the Microsoft Windows App SDK.                           |
@@ -324,6 +324,23 @@ If you still need one of the stripped packages on Windows for a specific reason,
 
 > [!NOTE]
 > This property is aimed at libraries (`IsPackable=true`). Application heads typically need the implicit Uno packages on Windows to run, so setting this on a head project is not recommended.
+
+## MVUX feed mocks in non-optimized builds
+
+When `UnoFeatures` includes `MVUX`, the `Uno.Sdk` also references [`Uno.HotTesting.Reactive`](https://www.nuget.org/packages/Uno.HotTesting.Reactive) in builds where `Optimize` is not `true` (Debug, by default). The package provides MVUX feed mocks for previews and UI tests, and is meant to stay out of published apps:
+
+- It is absent from optimized (Release) builds. Code that uses its types must only compile in non-optimized builds, for example under `#if DEBUG`, or the Release build fails.
+- It is referenced with `PrivateAssets="all"`, so it does not flow to projects that reference yours, nor into the package of a library packed in Debug. A test project that doesn't use the `MVUX` feature references it directly, at the same version as the app's Uno.Extensions packages.
+- It follows `UnoExtensionsVersion`, and is skipped (`UNOB0028`) when that version is older than the 7.4 builds that first ship it, or is a floating version or a range.
+- Debug and Release restore different packages. Restore the configuration you build before any `--no-restore` build, and if you use `RestoreLockedMode`, give each configuration its own lock file, e.g. `<NuGetLockFilePath>packages.$(Configuration).lock.json</NuGetLockFilePath>`.
+
+To turn the implicit reference off:
+
+```xml
+<PropertyGroup>
+  <UnoDisableHotTesting>true</UnoDisableHotTesting>
+</PropertyGroup>
+```
 
 ## Running packaged WinUI apps with `dotnet run`
 

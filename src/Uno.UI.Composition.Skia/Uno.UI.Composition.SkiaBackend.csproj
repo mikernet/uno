@@ -29,7 +29,12 @@
 
 	<ItemGroup>
 		<PackageReference Include="SkiaSharp" />
+		<PackageReference Include="SkiaSharp.Skottie" />
 		<PackageReference Include="HarfBuzzSharp" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Compile Include="..\Uno.UI.Composition.Managed\HarfBuzzShapingOptions.cs" Link="Composition\Uno\Drawing\HarfBuzzShapingOptions.cs" />
 	</ItemGroup>
 
 	<ItemGroup>

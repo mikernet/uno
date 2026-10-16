@@ -60,6 +60,10 @@ internal partial class Win32WindowWrapper : NativeWindowWrapperBase, IXamlRootHo
 	internal IDrawingFactory GraphicsFactory { get; private set; } = null!;
 	private FrameworkElement? _frameThemeSource;
 
+	// The window's CompositionTarget reads this when it first needs a backend, so it never records under
+	// one and presents under another.
+	IDrawingFactory? IXamlRootHost.Renderer => _renderer;
+
 	private Win32Accessibility? _accessibility;
 	private bool _rendererDisposed;
 	private bool _forcePaintOnNextEraseBkgndOrNcPaint = true;
@@ -456,7 +460,8 @@ internal partial class Win32WindowWrapper : NativeWindowWrapperBase, IXamlRootHo
 			OnWindowSizeOrLocationChanged(); // In case the window size has changed but WM_SIZE is not fired yet. This happens specifically if the window is starting maximized using _pendingState
 			XamlRoot!.VisualTree.RootElement.UpdateLayout(); // relayout in response to the new window size
 		}
-		// Force an early SKPicture record so the render thread has fresh content to present.
+		// Force an early SKPicture record so the render thread has fresh content to present. The target resolves
+		// its backend from this host on the way in, so the frame is recorded under the backend that presents it.
 		(XamlRoot?.Content?.Visual.CompositionTarget as CompositionTarget)?.OnRenderFrameOpportunity();
 		// Signal the render thread and wait briefly for the present to land.
 		// Bounded so an unresponsive GPU does not stall WM_SIZE / WM_MOVE / ShowCore.
@@ -605,8 +610,6 @@ internal partial class Win32WindowWrapper : NativeWindowWrapperBase, IXamlRootHo
 		{
 			return true;
 		}
-		// Closing should continue, perform suspension.
-		Application.Current.RaiseSuspending();
 		// DefWindowProc destroys the window from here.
 		StopRenderThread();
 		return false;
@@ -769,6 +772,39 @@ internal partial class Win32WindowWrapper : NativeWindowWrapperBase, IXamlRootHo
 		if (!success) { this.LogError()?.Error($"{nameof(PInvoke.SetWindowPos)} failed: {Win32Helper.GetErrorMessage()}"); }
 	}
 
+	public override PointInt32 ConvertLocalToScreen(Windows.Foundation.Point localPoint)
+		=> TryConvertLocalToScreen(localPoint, out var screenPoint)
+			? screenPoint
+			: base.ConvertLocalToScreen(localPoint);
+
+	public override bool TryConvertLocalToScreen(Windows.Foundation.Point localPoint, out PointInt32 screenPoint)
+	{
+		var scale = RasterizationScale == 0 ? 1 : RasterizationScale;
+		var point = new Point((int)Math.Round(localPoint.X * scale), (int)Math.Round(localPoint.Y * scale));
+		var success = PInvoke.ClientToScreen(_hwnd, ref point);
+		screenPoint = success ? new PointInt32(point.X, point.Y) : default;
+		return success;
+	}
+
+	public override Windows.Foundation.Point ConvertScreenToLocal(PointInt32 screenPoint)
+		=> TryConvertScreenToLocal(screenPoint, out var localPoint)
+			? localPoint
+			: base.ConvertScreenToLocal(screenPoint);
+
+	public override bool TryConvertScreenToLocal(PointInt32 screenPoint, out Windows.Foundation.Point localPoint)
+	{
+		var point = new Point(screenPoint.X, screenPoint.Y);
+		if (!PInvoke.ScreenToClient(_hwnd, ref point))
+		{
+			localPoint = default;
+			return false;
+		}
+
+		var scale = RasterizationScale == 0 ? 1 : RasterizationScale;
+		localPoint = new Windows.Foundation.Point(point.X / scale, point.Y / scale);
+		return true;
+	}
+
 	private unsafe void UpdateWindowPropertiesFromPackage()
 	{
 		if (Windows.ApplicationModel.Package.Current.Logo is { } uri)
@@ -913,6 +949,7 @@ internal partial class Win32WindowWrapper : NativeWindowWrapperBase, IXamlRootHo
 		// Router owns the framework's single-slot registrations; per-window
 		// Win32Accessibility instances fan out via the router.
 		AccessibilityRouter.EnsureInitialized();
+		AccessibilityRouter.EnsureTreeNotifications();
 
 		// Defer instance creation until the root element is available.
 		// The root element may not be set yet at construction time.
@@ -949,7 +986,7 @@ internal partial class Win32WindowWrapper : NativeWindowWrapperBase, IXamlRootHo
 		_accessibility = new Win32Accessibility(_hwnd.Value, rootElement, rootElement.DispatcherQueue);
 	}
 
-	SkiaAccessibilityBase? IAccessibilityOwner.Accessibility => _accessibility;
+	public SkiaAccessibilityBase? Accessibility => _accessibility;
 
 	UIElement? IXamlRootHost.RootElement => Window?.RootElement;
 
