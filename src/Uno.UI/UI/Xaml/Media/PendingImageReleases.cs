@@ -71,19 +71,16 @@ internal static class PendingImageReleases
 	}
 
 	/// <summary>
-	/// Starts the wait of decoded data nothing displays: <see cref="ReleaseDelay"/>, or with a <paramref name="delay"/> of
-	/// zero, until after the layout pass, e.g. data that was replaced once its replacement is drawn.
+	/// Starts the wait of decoded data nothing displays: <see cref="ReleaseDelay"/>, or until after the layout pass
+	/// (<paramref name="afterPass"/>), e.g. data that was replaced once its replacement is drawn.
 	/// </summary>
-	internal static Entry Add(long bytes, Action release, TimeSpan? delay = null)
+	internal static Entry Add(long bytes, Action release, bool afterPass = false)
 	{
-		Debug.Assert(delay is null || delay == TimeSpan.Zero, "A wait is ReleaseDelay, or until after the pass.");
-
 		var entry = new Entry(bytes, release);
-		var isAfterPass = delay == TimeSpan.Zero;
-		entry.Node = (isAfterPass ? _afterPass : _waits).AddLast(entry);
+		entry.Node = (afterPass ? _afterPass : _waits).AddLast(entry);
 		_pendingBytes += bytes;
 
-		if (isAfterPass || IsOverLimit)
+		if (afterPass || IsOverLimit)
 		{
 			RequestCheck();
 		}
@@ -129,7 +126,7 @@ internal static class PendingImageReleases
 
 	internal static void OnLayoutPassCompleted()
 	{
-		if (_afterPass.Count > 0 || (_waits.First is { } first && (IsOverLimit || Stopwatch.GetTimestamp() >= GetDueAt(first.Value))))
+		if (_afterPass.Count > 0 || IsOverLimit || IsFirstWaitDue)
 		{
 			ReleaseDue(atLayoutPassEnd: true);
 		}
@@ -142,11 +139,13 @@ internal static class PendingImageReleases
 
 	private static bool IsOverLimit => _pendingBytes > FeatureConfiguration.Image.MaxUndisplayedImageBytes;
 
+	private static bool IsFirstWaitDue => _waits.First is { } first && Stopwatch.GetTimestamp() >= GetDueAt(first.Value);
+
 	private static long GetDueAt(Entry entry)
 		=> entry.Since + (long)(ReleaseDelay.TotalSeconds * Stopwatch.Frequency);
 
 	// At the end of a pass, only what was let go before it began: an element re-added during this pass may be loaded by the
-	// next one. What was let go during it is at the end of each list.
+	// next one. What was let go during it is at the end of each queue.
 	private static bool IsFromThisPass(Entry entry, bool atLayoutPassEnd)
 		=> atLayoutPassEnd && entry.LayoutPass == _layoutPass;
 

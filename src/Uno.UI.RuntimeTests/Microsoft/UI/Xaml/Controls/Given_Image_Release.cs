@@ -688,31 +688,94 @@ public class Given_Image_Release
 	}
 
 	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
-	public async Task When_Image_Leaves_Then_Its_Pixels_Wait_Once()
+	public async Task When_Over_Limit_Behind_A_Download_Then_Undisplayed_Image_Still_Released()
 	{
-		// An Image that leaves with the source's current image has it wait once: within a limit that fits it exactly, it stays.
+		// Over the limit, a download in flight that nothing waits for (no bytes yet) is passed over, not released: the
+		// undisplayed image behind it goes, and the download goes on.
+		using var _ = DisableBitmapImageCache();
+		using var limit = ReleaseAfterLayoutPass();
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var downloading = new BitmapImage(server.Uri);
+			var downloaded = TrackOpen(downloading);
+			var first = new Image { Width = 100, Height = 40, Source = downloading };
+			panel.Children.Add(first);
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the first image is downloading");
+			panel.Children.Remove(first);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var second = new Image { Width = 100, Height = 40, Source = bitmap };
+			await AddAndWaitForOpened(panel, second);
+			var surface = GetSurface(bitmap);
+			panel.Children.Remove(second);
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(surface.Image, "The undisplayed image behind the download is released over the limit");
+
+			server.ReleaseResponses();
+			Assert.IsTrue(await downloaded.WaitAsync(TimeSpan.FromSeconds(10)), "The download goes on");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Images_Leave_With_The_Same_Pixels_Then_Each_Can_Come_Back_With_Them()
+	{
+		// Two Images leave drawing the first image while a third draws its replacement. The first one back takes the image
+		// and moves on to the replacement; the other, back while the next download is held, must still find the image.
 		using var _ = DisableBitmapImageCache();
 		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
 		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
 
 		try
 		{
-			var panel = new StackPanel();
+			using var server = await GatedImageServer.StartAsync();
+			var panel = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
 			await UITestHelper.Load(panel, x => x.IsLoaded);
 
 			var bitmap = new BitmapImage(new Uri(AssetUri));
-			var image = new Image { Width = 100, Height = 40, Source = bitmap };
-			await AddAndWaitForOpened(panel, image);
-			await WindowHelper.WaitForIdle();
-			var surface = GetSurface(bitmap);
+			var staying = new Image { Source = bitmap };
+			var firstBack = new Image { Source = bitmap };
+			var secondBack = new Image { Source = bitmap };
+			foreach (var image in new[] { staying, firstBack, secondBack })
+			{
+				panel.Children.Add(image);
+			}
 
-			// Set in the same turn as the removal, so the image alone fits the limit exactly.
-			FeatureConfiguration.Image.MaxUndisplayedImageBytes = surface.DecodedByteCount;
-			panel.Children.Remove(image);
+			await WindowHelper.WaitFor(() => secondBack.ActualWidth > 99, 10000, "Pre-condition: the Images draw the first image");
+			await WindowHelper.WaitForIdle();
+			var previous = GetSurface(bitmap);
+
+			panel.Children.Remove(firstBack);
+			panel.Children.Remove(secondBack);
+			bitmap.UriSource = new Uri(TallAssetUri);
+			await WindowHelper.WaitFor(() => staying.ActualWidth is > 0 and < 99, 10000, "Pre-condition: the staying Image draws the second image");
+
+			panel.Children.Add(firstBack);
+			await WindowHelper.WaitFor(() => firstBack.ActualWidth is > 0 and < 99, 10000, "Pre-condition: the first Image back draws the second image");
 			await WindowHelper.WaitForIdle();
 
-			Assert.IsNotNull(surface.Image, "The image waits once, within the limit");
+			bitmap.UriSource = server.Uri;
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the third image is downloading");
+			panel.Children.Add(secondBack);
+			await UITestHelper.WaitForLoaded(secondBack, x => x.IsLoaded);
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNotNull(previous.Image, "The other Image, still away, keeps the first image");
+			Assert.AreEqual(100, secondBack.ActualWidth, 1, "Back while the download is held, it draws the first image");
 		}
 		finally
 		{
@@ -750,7 +813,7 @@ public class Given_Image_Release
 			FeatureConfiguration.Image.MaxUndisplayedImageBytes = waiting.DecodedByteCount;
 			panel.Children.Remove(waitingImage);
 			await WindowHelper.WaitForIdle();
-			Assert.IsNotNull(waiting.Image, "Pre-condition: the waiting image fits the limit");
+			Assert.IsNotNull(waiting.Image, "An Image that leaves with the current image has it wait once, so it fits a limit of its own size");
 
 			var opened = TrackOpened(shownImage);
 			shownBitmap.UriSource = new Uri(SquareAssetUri);

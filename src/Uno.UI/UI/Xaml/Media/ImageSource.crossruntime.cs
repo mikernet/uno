@@ -44,13 +44,13 @@ namespace Microsoft.UI.Xaml.Media
 
 		private sealed class Held(ImageData data)
 		{
-			internal ImageData Data = data;
+			internal readonly ImageData Data = data;
 
 			// How many times the subscriptions' Shown and Pending refer to it.
 			internal int Count;
 
-			// An Image drew it when it left: once nothing holds it, it waits the full delay, for that Image to come back.
-			internal bool LeftWith;
+			// How many Images drew it when they left: once nothing holds it, it waits the full delay, for them to come back.
+			internal int LeftWith;
 
 			// Replaced, releasable and held by none: its wait to be released.
 			internal PendingImageReleases.Entry Wait;
@@ -101,6 +101,9 @@ namespace Microsoft.UI.Xaml.Media
 		/// </param>
 		internal Subscription Subscribe(Action<ImageData> onSourceOpened, ICompositionSurface shown = null, bool appliedOnDelivery = true)
 		{
+			// What a subscriber still draws stays held until it draws the replacement, which only one that draws later does.
+			Debug.Assert(shown is null || !appliedOnDelivery, "Only a subscriber that draws later passes what it still draws.");
+
 			var subscription = new Subscription(this, onSourceOpened, appliedOnDelivery, KeepReplaced(shown));
 			subscription.Node = _subscriptions.AddLast(subscription);
 			CancelPendingRelease();
@@ -223,12 +226,12 @@ namespace Microsoft.UI.Xaml.Media
 			// An Image keeps drawing what it drew off the tree (its sprite), and may come back with it.
 			if (!subscription.AppliedOnDelivery && IsReleasable(subscription.Shown))
 			{
-				GetHeld(subscription.Shown).LeftWith = true;
+				GetHeld(subscription.Shown).LeftWith++;
 			}
 
 			CountHold(subscription.Shown, -1);
 			CountHold(subscription.Pending, -1);
-			ReleaseUnheld(delay: null);
+			ReleaseUnheld(afterPass: false);
 
 			if (_subscriptions.Count == 0)
 			{
@@ -236,7 +239,7 @@ namespace Microsoft.UI.Xaml.Media
 			}
 		}
 
-		private void OnApplied() => ReleaseUnheld(TimeSpan.Zero);
+		private void OnApplied() => ReleaseUnheld(afterPass: true);
 
 		private Held GetHeld(ImageData data)
 		{
@@ -266,7 +269,7 @@ namespace Microsoft.UI.Xaml.Media
 				PendingImageReleases.Remove(wait);
 				held.Wait = null;
 			}
-			else if (held.Count == 0 && !held.LeftWith && (ReferenceEquals(surface, _imageData.CompositionSurface) || !IsReleasable(held.Data)))
+			else if (held.Count == 0 && held.LeftWith == 0 && (ReferenceEquals(surface, _imageData.CompositionSurface) || !IsReleasable(held.Data)))
 			{
 				// The current data, or data the cache shares: nothing to wait for.
 				_held.Remove(surface);
@@ -369,10 +372,10 @@ namespace Microsoft.UI.Xaml.Media
 		}
 
 		/// <summary>
-		/// Starts the wait of the replaced data nothing holds anymore: after the pass (a zero <paramref name="delay"/>), or
-		/// the full delay for what an Image left with, so it can come back with it (see <see cref="KeepReplaced"/>).
+		/// Starts the wait of the replaced data nothing holds anymore: the full delay, or after the pass for what a subscriber
+		/// stopped drawing because it drew the replacement, unless an Image left with it (see <see cref="KeepReplaced"/>).
 		/// </summary>
-		private void ReleaseUnheld(TimeSpan? delay)
+		private void ReleaseUnheld(bool afterPass)
 		{
 			if (_held is null)
 			{
@@ -390,18 +393,18 @@ namespace Microsoft.UI.Xaml.Media
 					continue;
 				}
 
-				var wait = held.LeftWith ? null : delay;
+				var isAfterPass = afterPass && held.LeftWith == 0;
 				var data = held.Data;
 
 				// What goes after the pass is released then anyway: counting it would have older waiting images go too.
 				held.Wait = PendingImageReleases.Add(
-					wait == TimeSpan.Zero ? 0 : GetByteCount(data),
+					isAfterPass ? 0 : GetByteCount(data),
 					() =>
 					{
 						_held?.Remove(surface);
 						ReleaseSurface(data);
 					},
-					wait);
+					isAfterPass);
 			}
 		}
 
@@ -420,8 +423,12 @@ namespace Microsoft.UI.Xaml.Media
 
 			if (_held?.TryGetValue(surface, out var held) == true)
 			{
-				// The subscription's hold, counted once it is created, ends the wait.
-				held.LeftWith = false;
+				// The subscription's hold, counted once it is created, ends the wait; other Images may still be away with it.
+				if (held.LeftWith > 0)
+				{
+					held.LeftWith--;
+				}
+
 				return held.Data;
 			}
 
@@ -545,7 +552,7 @@ namespace Microsoft.UI.Xaml.Media
 				}
 			}
 
-			ReleaseUnheld(TimeSpan.Zero);
+			ReleaseUnheld(afterPass: true);
 
 			// A decode that completed while nothing subscribes waits in place of the open.
 			if (_pendingRelease is { } pending)
