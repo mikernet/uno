@@ -159,8 +159,9 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 		// which may change the source: that supersedes the open, which then raises nothing and releases what it owns.
 		private ImageData Publish(ImageData imageData, int version, CancellationToken ct)
 		{
-			// Checked after each setter: the open that supersedes this one may have set its own size already (from a completed
-			// cache entry), which this one must not overwrite.
+			// Superseded while decoding, or by a size setter's handler: the open that superseded this one may have set its own
+			// size already (from a completed cache entry), which this one must not overwrite.
+			ThrowIfSuperseded(imageData, ct);
 			if (imageData.Kind == ImageDataKind.Error)
 			{
 				PixelWidth = 0;
@@ -291,14 +292,6 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 							// delegate and clonedStream would leak.
 							clonedStream.Dispose();
 							throw;
-						}
-
-						if (ct.IsCancellationRequested)
-						{
-							// Superseded while decoding: the result must not be published on a source that moved on, and a
-							// stream load is never shared, so it is this requester's alone to release.
-							ReleaseSurface(imageData);
-							throw new OperationCanceledException(ct);
 						}
 
 						return Publish(imageData, version, ct);

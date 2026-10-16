@@ -2,6 +2,7 @@
 using Uno.Foundation.Logging;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
@@ -242,6 +243,7 @@ namespace Microsoft.UI.Xaml.Media
 			{
 				var counts = _holdCounts ??= new(ReferenceEqualityComparer.Instance);
 				var count = counts.GetValueOrDefault(surface) + change;
+				Debug.Assert(count >= 0, "A subscription let go of a surface it did not hold.");
 				if (count > 0)
 				{
 					counts[surface] = count;
@@ -293,16 +295,10 @@ namespace Microsoft.UI.Xaml.Media
 		{
 			_pendingRelease = null;
 
-			// An open nothing waits for is stopped, which cancels an uncached download.
-			_opening.Disposable = null;
-			_isOpening = false;
-			ReleaseReplaced();
-
-			if (IsReleasable(_imageData))
+			// An open nothing waits for is stopped, which cancels an uncached download; data shared through the cache stays.
+			if (_isOpening || IsReleasable(_imageData))
 			{
-				ReleaseSurface(_imageData);
-				_imageData = ImageData.Empty;
-				_dataVersion++;
+				ReleaseImageData();
 			}
 		}
 
@@ -354,10 +350,8 @@ namespace Microsoft.UI.Xaml.Media
 		}
 
 		/// <summary>
-		/// Hands the replaced data no subscriber draws or was given to <see cref="PendingImageReleases"/>, where one that
-		/// draws it again takes it back. What a subscriber stopped drawing, as it drew what replaced it, is released after
-		/// the layout pass (a <paramref name="delay"/> of zero); what a subscriber that drew it took away when it left waits
-		/// like data nothing subscribes to, so that subscriber can come back with it (see <see cref="Subscribe"/>).
+		/// Starts the wait of the replaced data no subscriber draws or was given anymore: after the pass (a zero
+		/// <paramref name="delay"/>), or the full delay for what an Image left with (see <see cref="KeepReplaced"/>).
 		/// </summary>
 		private void ReleaseReplacedNoLongerShown(TimeSpan? delay)
 		{
@@ -483,10 +477,6 @@ namespace Microsoft.UI.Xaml.Media
 			}
 		}
 
-		/// <summary>
-		/// Opening runs app code (a completed cache entry raises ImageOpened before TryOpenSourceAsync returns), which may
-		/// supersede the open, cancelling <c>ct</c>, or dispose the source: only an open still current updates its state.
-		/// </summary>
 		private void Open()
 		{
 			var cts = new CancellationTokenSource();
@@ -497,47 +487,22 @@ namespace Microsoft.UI.Xaml.Media
 			{
 				if (TryOpenSourceSync(null, null, out var img))
 				{
-					if (!ct.IsCancellationRequested)
-					{
-						OnOpened(img);
-					}
-					else if (!ReferenceEquals(img.CompositionSurface, _imageData.CompositionSurface))
-					{
-						// A WriteableBitmap opens into the one surface it has, which the open that superseded this one shows.
-						ReleaseSurface(img);
-					}
+					Complete(img);
 				}
 				else if (TryOpenSourceAsync(ct, null, null, out var asyncImg))
 				{
-					// The result of a superseded open is still observed, to release it.
 					var isEnqueued = DispatcherQueue.TryEnqueue(async () =>
 					{
 						try
 						{
-							var data = await asyncImg;
-							if (!ct.IsCancellationRequested)
-							{
-								_isOpening = false;
-								OnOpened(data);
-							}
-							else
-							{
-								// A superseded open still produced an image nobody will show: release it now rather than leave
-								// it to finalization, which is what a burst of source changes would otherwise pile up.
-								ReleaseSurface(data);
-							}
+							Complete(await asyncImg);
 						}
 						catch (OperationCanceledException) when (ct.IsCancellationRequested)
 						{
 						}
 						catch (Exception error)
 						{
-							// A superseded open that fails publishes nothing: the source has moved on.
-							if (!ct.IsCancellationRequested)
-							{
-								_isOpening = false;
-								OnOpened(ImageData.FromError(error));
-							}
+							Complete(ImageData.FromError(error));
 						}
 					});
 
@@ -546,17 +511,29 @@ namespace Microsoft.UI.Xaml.Media
 						_isOpening = isEnqueued;
 					}
 				}
-				else if (!ct.IsCancellationRequested)
+				else
 				{
-					OnOpened(new ImageData()); // Empty
+					Complete(ImageData.Empty);
 				}
 			}
 			catch (Exception error)
 			{
+				Complete(ImageData.FromError(error));
+			}
+
+			// Opening runs app code (a completed cache entry raises ImageOpened before TryOpenSourceAsync returns) that may
+			// supersede the open or dispose the source: only an open still current updates the source. A superseded one
+			// releases what it produced, unless it is the one surface a WriteableBitmap opens into.
+			void Complete(ImageData data)
+			{
 				if (!ct.IsCancellationRequested)
 				{
 					_isOpening = false;
-					OnOpened(ImageData.FromError(error));
+					OnOpened(data);
+				}
+				else if (!ReferenceEquals(data.CompositionSurface, _imageData.CompositionSurface))
+				{
+					ReleaseSurface(data);
 				}
 			}
 		}

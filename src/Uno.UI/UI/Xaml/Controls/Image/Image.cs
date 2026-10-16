@@ -242,11 +242,8 @@ namespace Microsoft.UI.Xaml.Controls
 		{
 			base.OnUnloaded();
 
-			// Nothing displays this image while it is unloaded, so its subscription is released, which lets the source
-			// release its decoded pixels once they have waited (PendingImageReleases). The sprite keeps its brush: it is not
-			// drawn off the tree, an Image back in time shows its pixels even in a frame recorded before Loaded, and a
-			// released surface draws nothing (the release also drops the sprite's cached recording). Data not yet drawn is
-			// dropped: the source keeps what the sprite draws, for an Image that comes back with it.
+			// Released so the source can let go of its pixels once they have waited (PendingImageReleases). The sprite keeps
+			// its brush: it is not drawn off the tree, and an Image back in time still has them. Data not yet drawn is dropped.
 			_pendingImageData = null;
 			ReleaseSubscription();
 		}

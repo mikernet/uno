@@ -9,7 +9,7 @@ namespace Microsoft.UI.Xaml.Media
 		private readonly SerialDisposable _sourceSubscription = new SerialDisposable();
 
 		// Changes on every ImageSource change, so a Subscribe that the app superseded meanwhile is noticed.
-		private int _sourceVersion;
+		private int _subscriptionVersion;
 
 		internal ImageData? ImageDataCache;
 
@@ -23,13 +23,11 @@ namespace Microsoft.UI.Xaml.Media
 				surfaceBrush.Surface = null;
 			}
 
-			// A UriSource change needs no new subscription: the source opens the new URI for this one, and the brush draws what
-			// it has until then, as an Image does (and as WinUI keeps the surface while it switches URIs).
-			var version = ++_sourceVersion;
+			var version = ++_subscriptionVersion;
 			var subscription = newValue?.Subscribe(OnSourceOpened);
 
 			// Subscribing ran app code (an ImageOpened handler) that may have set another ImageSource, subscribed to by now.
-			if (version == _sourceVersion)
+			if (version == _subscriptionVersion)
 			{
 				_sourceSubscription.Disposable = subscription;
 			}
