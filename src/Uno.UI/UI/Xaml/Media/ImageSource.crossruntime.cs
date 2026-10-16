@@ -102,6 +102,13 @@ namespace Microsoft.UI.Xaml.Media
 		internal static int ReleasedSurfacesForTesting;
 
 		/// <summary>
+		/// Changes when what this source shows changes (a new UriSource or stream, an invalidation), but not when its
+		/// decoded data is only released and decoded again: the opened events are raised once per version, as WinUI
+		/// raises them once per source.
+		/// </summary>
+		internal int SourceVersion { get; private protected set; }
+
+		/// <summary>
 		/// Releases what this source decoded for its subscribers once it has waited for one to come back (see
 		/// <see cref="PendingImageReleases"/>), so an element that leaves the tree and enters it again meanwhile
 		/// (re-parenting, re-templating, container recycling) keeps its pixels.
@@ -204,6 +211,8 @@ namespace Microsoft.UI.Xaml.Media
 		private protected void InvalidateSource()
 		{
 			ReleaseImageData();
+			SourceVersion++;
+
 			if (_subscriptions.Count > 0 || this is SvgImageSource)
 			{
 				Open();

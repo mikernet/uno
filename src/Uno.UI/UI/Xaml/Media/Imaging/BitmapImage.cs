@@ -141,9 +141,18 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 			ImageFailed?.Invoke(this, new ExceptionRoutedEventArgs(this, ex.Message));
 		}
 
+		// WinUI raises ImageOpened once per source, so decoding the same source again after its release raises nothing
+		// (MUX Reference: CImageSource::FireImageOpened, m_publicBitmapEventFired, re-armed by ResetCallbackEvents when
+		// the source is set — imagesource.cpp).
+		private int? _imageOpenedVersion;
+
 		internal void RaiseImageOpened()
 		{
-			ImageOpened?.Invoke(this, new RoutedEventArgs(this));
+			if (_imageOpenedVersion != SourceVersion)
+			{
+				_imageOpenedVersion = SourceVersion;
+				ImageOpened?.Invoke(this, new RoutedEventArgs(this));
+			}
 		}
 
 		private readonly record struct BitmapImageCacheKey(Uri Uri, int? DecodeWidth, int? DecodeHeight);

@@ -19,6 +19,11 @@ namespace Microsoft.UI.Xaml.Controls
 		private CompositionSurfaceBrush _surfaceBrush;
 		private readonly SpriteVisual _imageSprite;
 		private ImageData? _pendingImageData;
+		private int _pendingImageVersion;
+
+		// The SourceVersion of Source that ImageOpened was raised for: WinUI raises it once per source, so the data
+		// delivered again when the Image re-enters the tree, or decoded again after its release, raises nothing.
+		private int? _imageOpenedVersion;
 
 		public Image()
 		{
@@ -34,6 +39,7 @@ namespace Microsoft.UI.Xaml.Controls
 			_imageSprite.Brush = null;
 			_currentSurface = null;
 			_pendingImageData = null;
+			_imageOpenedVersion = null;
 			_sourceDisposable.Disposable = null;
 			_lastMeasuredSize = default;
 			InvalidateMeasure();
@@ -53,6 +59,7 @@ namespace Microsoft.UI.Xaml.Controls
 			_sourceDisposable.Disposable = source.Subscribe(img =>
 			{
 				_pendingImageData = img;
+				_pendingImageVersion = source.SourceVersion;
 
 				InvalidateMeasure();
 			});
@@ -108,6 +115,7 @@ namespace Microsoft.UI.Xaml.Controls
 		private void TryProcessPendingSource()
 		{
 			var currentData = _pendingImageData;
+			var version = _pendingImageVersion;
 			_pendingImageData = null;
 			if (currentData is null)
 			{
@@ -123,7 +131,12 @@ namespace Microsoft.UI.Xaml.Controls
 				_surfaceBrush = Visual.Compositor.CreateSurfaceBrush(_currentSurface);
 				_surfaceBrush.MonochromeColor = MonochromeColor;
 				_imageSprite.Brush = _surfaceBrush;
-				ImageOpened?.Invoke(this, new RoutedEventArgs(this));
+
+				if (_imageOpenedVersion != version)
+				{
+					_imageOpenedVersion = version;
+					ImageOpened?.Invoke(this, new RoutedEventArgs(this));
+				}
 			}
 			else if (processedData is { Kind: ImageDataKind.Empty })
 			{
