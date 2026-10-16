@@ -239,7 +239,8 @@ namespace Uno.UI
 			/// </summary>
 			/// <remarks>
 			/// Defaults: 128 MB on desktop, 64 MB on Android, iOS and tvOS, 32 MB on WebAssembly (its memory is capped at 2 GB
-			/// and never shrinks). Uno decodes an image in full unless DecodePixelWidth or DecodePixelHeight is set.
+			/// and never shrinks). Set it to the app's memory budget: a higher limit keeps more recently shown images ready, a
+			/// lower one frees them sooner. Uno decodes an image in full unless DecodePixelWidth or DecodePixelHeight is set.
 			/// </remarks>
 			public static long MaxUndisplayedImageBytes { get; set; } =
 				OperatingSystem.IsBrowser() ? 32L * 1024 * 1024
