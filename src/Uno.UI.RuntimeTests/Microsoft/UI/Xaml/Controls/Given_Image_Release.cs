@@ -1076,6 +1076,47 @@ public class Given_Image_Release
 	[TestMethod]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_PixelWidth_Handler_Switches_To_Cached_Source_Then_Size_Is_The_Replacement()
+	{
+		// A PixelWidth handler switches the bitmap to a URI whose cached load already completed, so the replacement sets its
+		// size before the first open sets its height, which must not overwrite it. Only a brush displays the bitmap, so no
+		// Image measure sets the size again.
+		using var cache = EnableBitmapImageCache();
+		using var server = await GatedImageServer.StartAsync();
+		server.ReleaseResponses();
+
+		var warm = new BitmapImage(server.Uri);
+		var warmed = TrackOpen(warm);
+		var warmBrush = new ImageBrush { ImageSource = warm };
+		Assert.IsTrue(await warmed.WaitAsync(TimeSpan.FromSeconds(10)), "Pre-condition: the cache entry completes");
+
+		var bitmap = new BitmapImage();
+		var switched = false;
+		bitmap.RegisterPropertyChangedCallback(BitmapSource.PixelWidthProperty, (_, _) =>
+		{
+			if (!switched && bitmap.PixelWidth == 500)
+			{
+				switched = true;
+				bitmap.UriSource = server.Uri;
+			}
+		});
+
+		var opened = TrackOpen(bitmap);
+		var brush = new ImageBrush { ImageSource = bitmap };
+		bitmap.UriSource = new Uri(AssetUri);
+		Assert.IsTrue(await opened.WaitAsync(TimeSpan.FromSeconds(10)), "Pre-condition: the replacement opens");
+		await WindowHelper.WaitForIdle();
+
+		Assert.IsTrue(switched, "Pre-condition: the handler switched the source");
+		Assert.AreEqual(100, bitmap.PixelWidth, "The size is the replacement's");
+		Assert.AreEqual(100, bitmap.PixelHeight, "The superseded open must not overwrite the replacement's height");
+		GC.KeepAlive(brush);
+		GC.KeepAlive(warmBrush);
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Source_Changed_By_Last_Subscriber_Then_Previous_Pixels_Released()
 	{
 		// The same change made by the last subscriber skips nobody: every subscriber shows the second image, so the first

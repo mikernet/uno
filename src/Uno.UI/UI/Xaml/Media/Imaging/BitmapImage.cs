@@ -159,23 +159,23 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 		// which may change the source: that supersedes the open, which then raises nothing and releases what it owns.
 		private ImageData Publish(ImageData imageData, int version, CancellationToken ct)
 		{
+			// Checked after each setter: the open that supersedes this one may have set its own size already (from a completed
+			// cache entry), which this one must not overwrite.
 			if (imageData.Kind == ImageDataKind.Error)
 			{
 				PixelWidth = 0;
+				ThrowIfSuperseded(imageData, ct);
 				PixelHeight = 0;
 			}
 			else if (imageData.Kind == ImageDataKind.CompositionSurface)
 			{
 				var image = ((global::Microsoft.UI.Composition.CompositionImageSurface)imageData.CompositionSurface!).Image;
 				PixelWidth = image.PixelWidth;
+				ThrowIfSuperseded(imageData, ct);
 				PixelHeight = image.PixelHeight;
 			}
 
-			if (ct.IsCancellationRequested)
-			{
-				ReleaseSurface(imageData);
-				throw new OperationCanceledException(ct);
-			}
+			ThrowIfSuperseded(imageData, ct);
 
 			if (imageData.Kind == ImageDataKind.Error)
 			{
@@ -187,6 +187,15 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 			}
 
 			return imageData;
+		}
+
+		private static void ThrowIfSuperseded(ImageData imageData, CancellationToken ct)
+		{
+			if (ct.IsCancellationRequested)
+			{
+				ReleaseSurface(imageData);
+				throw new OperationCanceledException(ct);
+			}
 		}
 
 		private readonly record struct BitmapImageCacheKey(Uri Uri, int? DecodeWidth, int? DecodeHeight);
