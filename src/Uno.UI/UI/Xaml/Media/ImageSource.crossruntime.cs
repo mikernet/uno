@@ -32,7 +32,8 @@ namespace Microsoft.UI.Xaml.Media
 	partial class ImageSource
 	{
 		private readonly SerialDisposable _opening = new SerialDisposable();
-		private readonly List<Subscription> _subscriptions = new List<Subscription>();
+		// In subscription order, which is the notification order; a linked list, so unsubscribing is O(1).
+		private readonly LinkedList<Subscription> _subscriptions = new();
 
 		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
 		private bool _isOpening;
@@ -97,7 +98,7 @@ namespace Microsoft.UI.Xaml.Media
 		internal Subscription Subscribe(Action<ImageData> onSourceOpened, ICompositionSurface shown = null, bool appliedOnDelivery = true)
 		{
 			var subscription = new Subscription(this, onSourceOpened, appliedOnDelivery, KeepReplaced(shown));
-			_subscriptions.Add(subscription);
+			subscription.Node = _subscriptions.AddLast(subscription);
 			CancelPendingRelease();
 
 			if (_imageData.HasData)
@@ -157,6 +158,8 @@ namespace Microsoft.UI.Xaml.Media
 			/// </summary>
 			internal bool IsActive => !_isDisposed;
 
+			internal LinkedListNode<Subscription> Node { get; set; }
+
 			// Keeps the source's hold counts in step with Shown and Pending.
 			private void Set(ImageData shown, ImageData pending)
 			{
@@ -212,7 +215,7 @@ namespace Microsoft.UI.Xaml.Media
 
 		private void Unsubscribe(Subscription subscription)
 		{
-			_subscriptions.Remove(subscription);
+			_subscriptions.Remove(subscription.Node);
 
 			// An Image keeps drawing what it drew off the tree (its sprite), and may come back with it.
 			var surface = subscription.Shown.CompositionSurface;
