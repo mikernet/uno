@@ -1,7 +1,6 @@
 ﻿#nullable enable
 
 using System;
-using System.Threading;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml.Media;
 
@@ -31,16 +30,7 @@ internal partial struct ImageData
 #if __SKIA__
 	// Neutral surface (ICompositionSurface): a texture-backed CompositionImageSurface OR a live self-painting one
 	// (e.g. CompositionSvgSurface). Consumers that need texture specifics down-cast.
-	public static ImageData FromCompositionSurface(ICompositionSurface compositionSurface)
-	{
-		Interlocked.Increment(ref CompositionSurfacesCreatedForTesting);
-		return new(compositionSurface);
-	}
-
-	/// <summary>
-	/// Number of decoded surfaces produced; for tests.
-	/// </summary>
-	internal static int CompositionSurfacesCreatedForTesting;
+	public static ImageData FromCompositionSurface(ICompositionSurface compositionSurface) => new(compositionSurface);
 
 	private ImageData(ICompositionSurface compositionSurface)
 	{

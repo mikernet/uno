@@ -100,11 +100,6 @@ namespace Microsoft.UI.Xaml.Media
 		}
 
 		/// <summary>
-		/// Number of decoded surfaces released ahead of finalization; for tests.
-		/// </summary>
-		internal static int ReleasedSurfacesForTesting;
-
-		/// <summary>
 		/// Changes when what this source shows changes (a new UriSource or stream, an invalidation), but not when its
 		/// decoded data is only released and decoded again: the opened events are raised once per version, as WinUI
 		/// raises them once per source.
@@ -203,7 +198,6 @@ namespace Microsoft.UI.Xaml.Media
 			if (IsReleasable(data))
 			{
 				((CompositionImageSurface)data.CompositionSurface!).ReleaseFrames();
-				Interlocked.Increment(ref ReleasedSurfacesForTesting);
 			}
 		}
 
