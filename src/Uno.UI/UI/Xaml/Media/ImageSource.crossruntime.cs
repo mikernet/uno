@@ -443,6 +443,10 @@ namespace Microsoft.UI.Xaml.Media
 			}
 		}
 
+		/// <summary>
+		/// Opening runs app code (a completed cache entry raises ImageOpened before TryOpenSourceAsync returns), which may
+		/// supersede the open, cancelling <c>ct</c>, or dispose the source: only an open still current updates its state.
+		/// </summary>
 		private void Open()
 		{
 			var cts = new CancellationTokenSource();
@@ -453,11 +457,20 @@ namespace Microsoft.UI.Xaml.Media
 			{
 				if (TryOpenSourceSync(null, null, out var img))
 				{
-					OnOpened(img);
+					if (!ct.IsCancellationRequested)
+					{
+						OnOpened(img);
+					}
+					else if (!ReferenceEquals(img.CompositionSurface, _imageData.CompositionSurface))
+					{
+						// A WriteableBitmap opens into the one surface it has, which the open that superseded this one shows.
+						ReleaseSurface(img);
+					}
 				}
 				else if (TryOpenSourceAsync(ct, null, null, out var asyncImg))
 				{
-					_isOpening = DispatcherQueue.TryEnqueue(async () =>
+					// The result of a superseded open is still observed, to release it.
+					var isEnqueued = DispatcherQueue.TryEnqueue(async () =>
 					{
 						try
 						{
@@ -487,16 +500,24 @@ namespace Microsoft.UI.Xaml.Media
 							}
 						}
 					});
+
+					if (!ct.IsCancellationRequested)
+					{
+						_isOpening = isEnqueued;
+					}
 				}
-				else
+				else if (!ct.IsCancellationRequested)
 				{
 					OnOpened(new ImageData()); // Empty
 				}
 			}
 			catch (Exception error)
 			{
-				_isOpening = false;
-				OnOpened(ImageData.FromError(error));
+				if (!ct.IsCancellationRequested)
+				{
+					_isOpening = false;
+					OnOpened(ImageData.FromError(error));
+				}
 			}
 		}
 

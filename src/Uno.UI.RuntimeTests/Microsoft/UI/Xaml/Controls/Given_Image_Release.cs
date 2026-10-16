@@ -1316,6 +1316,54 @@ public class Given_Image_Release
 	[TestMethod]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Cached_Open_Handler_Unloads_And_Disposes_Then_Image_Opens_On_Reload()
+	{
+		// A displayed bitmap switches to a URI whose cached load completed, so its ImageOpened is raised before the open
+		// returns. A handler that unloads the Image and disposes the bitmap ends that open: it must not leave the source as
+		// opening, which would have the Image back in the tree wait forever.
+		using var cache = EnableBitmapImageCache();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			server.ReleaseResponses();
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			// Completes the cache entry for the server's image.
+			await AddAndWaitForOpened(panel, new Image { Width = 100, Height = 40, Source = new BitmapImage(server.Uri) });
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await AddAndWaitForOpened(panel, image);
+
+			var handled = false;
+			bitmap.ImageOpened += (_, _) =>
+			{
+				if (!handled)
+				{
+					handled = true;
+					panel.Children.Remove(image);
+					bitmap.Dispose();
+				}
+			};
+
+			bitmap.UriSource = server.Uri;
+			Assert.IsTrue(handled, "Pre-condition: the cached open raises ImageOpened before it returns");
+			await WindowHelper.WaitForIdle();
+
+			await AddAndWaitForOpened(panel, image);
+			Assert.IsTrue(bitmap.IsOpened, "The Image back in the tree has its source opened again");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Cached_Open_Handler_Changes_Brush_Source_Then_Brush_Draws_Replacement()
 	{
 		// The same for a brush: the source its ImageOpened handler switched it to, while it subscribed, is the one it draws.
