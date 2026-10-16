@@ -272,12 +272,12 @@ namespace Microsoft.UI.Xaml.Media
 						}
 						catch (Exception error)
 						{
+							// A superseded open that fails publishes nothing: the source has moved on.
 							if (!ct.IsCancellationRequested)
 							{
 								_isOpening = false;
+								OnOpened(ImageData.FromError(error));
 							}
-
-							OnOpened(ImageData.FromError(error));
 						}
 					});
 				}
