@@ -657,6 +657,52 @@ public class Given_Image_Release
 
 	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Replaced_Image_Released_After_Pass_Then_Older_Waiting_Image_Kept()
+	{
+		// An image waits within the limit when another source's displayed image is replaced. The replaced image goes after
+		// the pass that draws its replacement, and must not count toward the limit meanwhile, which would release the
+		// waiting image with it.
+		using var _ = DisableBitmapImageCache();
+		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var waitingBitmap = new BitmapImage(new Uri(AssetUri));
+			var shownBitmap = new BitmapImage(new Uri(AssetUri));
+			var waitingImage = new Image { Width = 100, Height = 40, Source = waitingBitmap };
+			var shownImage = new Image { Width = 100, Height = 40, Source = shownBitmap };
+			await AddAndWaitForOpened(panel, waitingImage);
+			await AddAndWaitForOpened(panel, shownImage);
+			await WindowHelper.WaitForIdle();
+			var waiting = GetSurface(waitingBitmap);
+			var replaced = GetSurface(shownBitmap);
+
+			// Set in the same turn as the removal, so the waiting image alone fits the limit exactly.
+			FeatureConfiguration.Image.MaxUndisplayedImageBytes = waiting.DecodedByteCount;
+			panel.Children.Remove(waitingImage);
+			await WindowHelper.WaitForIdle();
+			Assert.IsNotNull(waiting.Image, "Pre-condition: the waiting image fits the limit");
+
+			var opened = TrackOpened(shownImage);
+			shownBitmap.UriSource = new Uri(SquareAssetUri);
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(replaced.Image, "The replaced image goes after the pass that draws its replacement");
+			Assert.IsNotNull(waiting.Image, "The waiting image must not be released for the replaced one");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Moved_Before_Next_Layout_Pass_Over_Limit_Then_Decoded_Image_Kept()
 	{
 		// An image larger than the limit by itself is released at the end of the next layout pass, so one moved before that
@@ -1293,6 +1339,156 @@ public class Given_Image_Release
 			Assert.AreEqual(0, image.ActualWidth, "The Image back in the tree must not show the image its source no longer has");
 			Assert.AreEqual(0, raised, "The Image back in the tree raises nothing for the settled source");
 			Assert.AreEqual(fails ? 1 : 0, otherFailed, "The other Image raised ImageFailed once, when the source failed");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[DataRow(false)]
+	[DataRow(true)]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Moved_Between_Delivery_And_Measure_Then_Image_Keeps_Drawing_Its_Pixels(bool cacheEnabled)
+	{
+		// Two Images draw a bitmap given a second image. In the next pass, before they are measured, a slow third one is
+		// started and the first Image moved, so that Image drops the second image and still draws the first, which must stay
+		// for it until the third arrives, although every subscriber was given the second.
+		using var cache = SetBitmapImageCache(cacheEnabled);
+		using var limit = ReleaseAfterLayoutPass();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var hook = new MeasureHook();
+			var first = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
+			var second = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
+			await UITestHelper.Load(new StackPanel { Children = { hook, first, second } }, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Source = bitmap };
+			var other = new Image { Source = bitmap };
+			await AddAndWaitForOpened(first, image);
+			await AddAndWaitForOpened(second, other);
+			await WindowHelper.WaitForIdle();
+			var previous = GetSurface(bitmap);
+			Assert.AreEqual(100, image.ActualWidth, 1, "Pre-condition: the Image draws the first image");
+
+			// The brush, notified after the Images, has the hook measured first in the next pass.
+			var brush = new ImageBrush { ImageSource = bitmap };
+			var armed = false;
+			var moved = false;
+			brush.ImageOpened += (_, _) =>
+			{
+				armed = true;
+				hook.InvalidateMeasure();
+			};
+			hook.Measuring = () =>
+			{
+				if (armed && !moved)
+				{
+					moved = true;
+					bitmap.UriSource = server.Uri;
+					first.Children.Remove(image);
+					second.Children.Add(image);
+				}
+			};
+
+			bitmap.UriSource = new Uri(SquareAssetUri);
+			await WindowHelper.WaitFor(() => moved, 10000, "Pre-condition: the second image is given and the Image moved before it is measured");
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the third image is downloading");
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreEqual(40, other.ActualWidth, 1, "Pre-condition: the other Image draws the second image");
+			Assert.AreEqual(100, image.ActualWidth, 1, "The moved Image still draws the first image, which must stay until the third arrives");
+			Assert.IsNotNull(previous.Image, "The first image stays while the moved Image draws it");
+
+			var opened = TrackOpened(image);
+			server.ReleaseResponses();
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreEqual(40, image.ActualWidth, 1, "The moved Image draws the third image");
+			if (!cacheEnabled)
+			{
+				Assert.IsNull(previous.Image, "Once the moved Image draws the third image, the first is released");
+			}
+
+			GC.KeepAlive(brush);
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Unloaded_Between_Delivery_And_Measure_Then_Drawn_Pixels_Wait_For_It()
+	{
+		// As above, but the first Image leaves for a while: it never drew the second image, so the first one, which it still
+		// draws off the tree, waits like any undisplayed image once the other Image draws the second, and the Image back in
+		// the tree before the third arrives draws it again.
+		using var _ = DisableBitmapImageCache();
+		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var hook = new MeasureHook();
+			var panel = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
+			await UITestHelper.Load(new StackPanel { Children = { hook, panel } }, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Source = bitmap };
+			var other = new Image { Source = bitmap };
+			await AddAndWaitForOpened(panel, image);
+			await AddAndWaitForOpened(panel, other);
+			await WindowHelper.WaitForIdle();
+			var previous = GetSurface(bitmap);
+
+			var brush = new ImageBrush { ImageSource = bitmap };
+			var armed = false;
+			var left = false;
+			brush.ImageOpened += (_, _) =>
+			{
+				armed = true;
+				hook.InvalidateMeasure();
+			};
+			hook.Measuring = () =>
+			{
+				if (armed && !left)
+				{
+					left = true;
+					bitmap.UriSource = server.Uri;
+					panel.Children.Remove(image);
+				}
+			};
+
+			bitmap.UriSource = new Uri(SquareAssetUri);
+			await WindowHelper.WaitFor(() => left, 10000, "Pre-condition: the second image is given and the Image left before it is measured");
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the third image is downloading");
+			await WindowHelper.WaitForIdle();
+			Assert.AreEqual(40, other.ActualWidth, 1, "Pre-condition: the other Image draws the second image");
+			Assert.IsNotNull(previous.Image, "The Image left drawing the first image, which waits for it within the delay");
+
+			panel.Children.Add(image);
+			await UITestHelper.WaitForLoaded(image, x => x.IsLoaded);
+			await WindowHelper.WaitForIdle();
+			Assert.AreEqual(100, image.ActualWidth, 1, "Back in the tree, the Image still draws the first image");
+
+			var opened = TrackOpened(image);
+			server.ReleaseResponses();
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreEqual(40, image.ActualWidth, 1, "The Image draws the third image");
+			Assert.IsNull(previous.Image, "Once the Image draws the third image, the first is released after the pass");
+			GC.KeepAlive(brush);
 		}
 		finally
 		{

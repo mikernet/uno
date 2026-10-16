@@ -37,11 +37,16 @@ namespace Microsoft.UI.Xaml.Media
 		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
 		private bool _isOpening;
 
-		// Owned data the source replaced while a subscriber still showed it; released once none does.
+		// Owned data the source replaced while a subscriber still drew it or was given it; released once none does.
 		private List<ImageData> _replacedImageData;
 
-		// Replaced data the last subscriber that showed it let go of, waiting to be released (see PendingImageReleases).
+		// Replaced data no subscriber draws or was given, waiting to be released (see PendingImageReleases) unless one draws
+		// it again.
 		private List<(ImageData Data, PendingImageReleases.Entry Entry)> _unshownReplacedImageData;
+
+		// Owned surfaces an Image drew when it left. Once no subscriber draws them, they wait like data nothing subscribes
+		// to rather than going after the pass, as that Image may come back with them.
+		private List<ICompositionSurface> _leftWithSurfaces;
 
 		// Changes whenever _imageData is replaced.
 		private int _dataVersion;
@@ -79,21 +84,23 @@ namespace Microsoft.UI.Xaml.Media
 		/// </param>
 		/// <param name="shown">
 		/// What the subscriber still draws from an earlier subscription to this source (an Image back in the tree). While the
-		/// source has data or is opening, that is kept until the subscriber is given what replaced it; once the source failed
+		/// source has data or is opening, that is kept until the subscriber draws what replaced it; once the source failed
 		/// or was cleared, the subscriber is given an empty image instead, so it stops drawing it.
 		/// </param>
-		internal IDisposable Subscribe(Action<ImageData> onSourceOpened, ICompositionSurface shown = null)
+		/// <param name="appliedOnDelivery">
+		/// Whether the subscriber draws what it is given at once (a brush). One that draws it later (an Image, when measured)
+		/// calls <see cref="Subscription.Applied"/> then, and what it drew until then stays meanwhile.
+		/// </param>
+		internal Subscription Subscribe(Action<ImageData> onSourceOpened, ICompositionSurface shown = null, bool appliedOnDelivery = true)
 		{
-			var subscription = new Subscription(onSourceOpened, KeepReplaced(shown));
+			var subscription = new Subscription(this, onSourceOpened, appliedOnDelivery, KeepReplaced(shown));
 			_subscriptions.Add(subscription);
 			CancelPendingRelease();
 
 			if (_imageData.HasData)
 			{
 				subscription.Deliver(_imageData);
-
-				// A replaced image the subscriber still drew goes once the pass applies what replaced it, as after an open.
-				ReleaseReplacedNoLongerShown(afterDelivery: true);
+				ReleaseReplacedNoLongerShown(TimeSpan.Zero);
 			}
 			else if (_subscriptions.Count == 1 && !_isOpening)
 			{
@@ -107,29 +114,104 @@ namespace Microsoft.UI.Xaml.Media
 				subscription.Deliver(ImageData.Empty);
 			}
 
-			return Disposable.Create(() =>
-			{
-				_subscriptions.Remove(subscription);
-				ReleaseReplacedNoLongerShown(afterDelivery: false);
-
-				if (_subscriptions.Count == 0)
-				{
-					ScheduleReleaseUnused();
-				}
-			});
+			return subscription;
 		}
 
-		private sealed class Subscription(Action<ImageData> callback, ImageData shown)
+		/// <summary>
+		/// A subscriber to this source, and what it draws and was given, which the source does not release.
+		/// </summary>
+		internal sealed class Subscription : IDisposable
 		{
-			// The data last delivered (or still drawn from an earlier subscription), which the subscriber may still be showing.
-			public ImageData Shown { get; private set; } = shown;
+			private readonly ImageSource _source;
+			private readonly Action<ImageData> _callback;
+			private bool _isDisposed;
 
-			public void Deliver(ImageData data)
+			internal Subscription(ImageSource source, Action<ImageData> callback, bool appliedOnDelivery, ImageData shown)
 			{
-				Shown = data;
-				callback(data);
+				_source = source;
+				_callback = callback;
+				AppliedOnDelivery = appliedOnDelivery;
+				Shown = shown;
+			}
+
+			/// <summary>
+			/// Whether the subscriber draws what it is given at once (see <see cref="Subscribe"/>).
+			/// </summary>
+			internal bool AppliedOnDelivery { get; }
+
+			/// <summary>
+			/// What the subscriber draws: what it last applied, or still draws from an earlier subscription.
+			/// </summary>
+			internal ImageData Shown { get; private set; }
+
+			/// <summary>
+			/// What the subscriber was given and has yet to draw.
+			/// </summary>
+			internal ImageData Pending { get; private set; }
+
+			internal bool Holds(ICompositionSurface surface)
+				=> ReferenceEquals(Shown.CompositionSurface, surface) || ReferenceEquals(Pending.CompositionSurface, surface);
+
+			internal void Deliver(ImageData data)
+			{
+				// Before the callback, which may change the source and so be given newer data, or throw.
+				if (AppliedOnDelivery)
+				{
+					Shown = data;
+					Pending = default;
+				}
+				else
+				{
+					Pending = data;
+				}
+
+				_callback(data);
+			}
+
+			/// <summary>
+			/// Tells the source that the subscriber now draws <paramref name="data"/>, the data it was last given (or an empty
+			/// image once it draws nothing), so what it drew before can be released.
+			/// </summary>
+			internal void Applied(ImageData data)
+			{
+				if (!_isDisposed)
+				{
+					Shown = data;
+					Pending = default;
+					_source.OnApplied();
+				}
+			}
+
+			public void Dispose()
+			{
+				if (!_isDisposed)
+				{
+					_isDisposed = true;
+					_source.Unsubscribe(this);
+				}
 			}
 		}
+
+		private void Unsubscribe(Subscription subscription)
+		{
+			_subscriptions.Remove(subscription);
+
+			// An Image keeps drawing what it drew off the tree (its sprite), and may come back with it.
+			var surface = subscription.Shown.CompositionSurface;
+			if (!subscription.AppliedOnDelivery && IsReleasable(subscription.Shown) && _leftWithSurfaces?.Contains(surface) != true)
+			{
+				(_leftWithSurfaces ??= new()).Add(surface);
+			}
+
+			ReleaseReplacedNoLongerShown(delay: null);
+
+			if (_subscriptions.Count == 0)
+			{
+				ScheduleReleaseUnused();
+			}
+		}
+
+		private void OnApplied() => ReleaseReplacedNoLongerShown(TimeSpan.Zero);
 
 		/// <summary>
 		/// Changes when what this source shows changes (a new UriSource or stream, an invalidation), but not when its
@@ -227,36 +309,39 @@ namespace Microsoft.UI.Xaml.Media
 					ReleaseSurface(data);
 				}
 			}
+
+			_leftWithSurfaces = null;
 		}
 
 		/// <summary>
-		/// Hands the replaced data none of the subscribers still shows to <see cref="PendingImageReleases"/>. Once they were
-		/// given what replaced it, it is released after the layout pass that applies that (an Image applies it when
-		/// measured), so no frame is recorded with neither. When instead the last subscriber that showed it lets go of it,
-		/// it waits like data nothing subscribes to, and that subscriber can take it back (see <see cref="Subscribe"/>).
+		/// Hands the replaced data no subscriber draws or was given to <see cref="PendingImageReleases"/>, where one that
+		/// draws it again takes it back. What a subscriber stopped drawing, as it drew what replaced it, is released after
+		/// the layout pass (a <paramref name="delay"/> of zero); what a subscriber that drew it took away when it left waits
+		/// like data nothing subscribes to, so that subscriber can come back with it (see <see cref="Subscribe"/>).
 		/// </summary>
-		private void ReleaseReplacedNoLongerShown(bool afterDelivery)
+		private void ReleaseReplacedNoLongerShown(TimeSpan? delay)
 		{
 			if (_replacedImageData is not { } replaced)
 			{
 				return;
 			}
 
-			List<ImageData> unshown = null;
+			List<(ImageData Data, TimeSpan? Delay)> unshown = null;
 			for (var i = replaced.Count - 1; i >= 0; i--)
 			{
 				var surface = replaced[i].CompositionSurface;
 
 				// A WriteableBitmap draws its new pixels into the same surface.
 				var isCurrent = ReferenceEquals(surface, _imageData.CompositionSurface);
-				if (!isCurrent && _subscriptions.Exists(s => ReferenceEquals(s.Shown.CompositionSurface, surface)))
+				if (!isCurrent && _subscriptions.Exists(s => s.Holds(surface)))
 				{
 					continue;
 				}
 
 				if (!isCurrent)
 				{
-					(unshown ??= new()).Add(replaced[i]);
+					var wait = _leftWithSurfaces?.Remove(surface) == true ? null : delay;
+					(unshown ??= new()).Add((replaced[i], wait));
 				}
 
 				replaced.RemoveAt(i);
@@ -272,28 +357,26 @@ namespace Microsoft.UI.Xaml.Media
 				return;
 			}
 
-			if (afterDelivery)
-			{
-				PendingImageReleases.Add(0, () => unshown.ForEach(ReleaseSurface), delay: TimeSpan.Zero);
-				return;
-			}
-
 			_unshownReplacedImageData ??= new();
-			foreach (var data in unshown)
+			foreach (var (data, wait) in unshown)
 			{
 				PendingImageReleases.Entry entry = null;
-				entry = PendingImageReleases.Add(GetByteCount(data), () =>
-				{
-					_unshownReplacedImageData?.RemoveAll(u => u.Entry == entry);
-					ReleaseSurface(data);
-				});
+				// Data a subscriber stopped drawing goes after the pass anyway: counting it would have older waiting images go too.
+				entry = PendingImageReleases.Add(
+					wait == TimeSpan.Zero ? 0 : GetByteCount(data),
+					() =>
+					{
+						_unshownReplacedImageData?.RemoveAll(u => u.Entry == entry);
+						ReleaseSurface(data);
+					},
+					wait);
 				_unshownReplacedImageData.Add((data, entry));
 			}
 		}
 
 		/// <summary>
-		/// The replaced data a subscriber still draws, taken back from its wait if the last subscriber that showed it let go,
-		/// as long as the subscriber will be given what replaced it.
+		/// What a subscriber back with <paramref name="surface"/> draws: the current data, or replaced data, taken back from its
+		/// wait if no subscriber drew it anymore, as long as the subscriber will be given what replaced it.
 		/// </summary>
 		private ImageData KeepReplaced(ICompositionSurface surface)
 		{
@@ -302,6 +385,12 @@ namespace Microsoft.UI.Xaml.Media
 			if (surface is null || !(_isOpening || _imageData.HasData || _subscriptions.Count == 0))
 			{
 				return default;
+			}
+
+			_leftWithSurfaces?.Remove(surface);
+			if (ReferenceEquals(surface, _imageData.CompositionSurface))
+			{
+				return _imageData;
 			}
 
 			var index = _replacedImageData?.FindIndex(d => ReferenceEquals(d.CompositionSurface, surface)) ?? -1;
@@ -436,7 +525,7 @@ namespace Microsoft.UI.Xaml.Media
 				}
 			}
 
-			ReleaseReplacedNoLongerShown(afterDelivery: true);
+			ReleaseReplacedNoLongerShown(TimeSpan.Zero);
 
 			// A decode that completed while nothing subscribes waits in place of the open.
 			if (_pendingRelease is { } pending)

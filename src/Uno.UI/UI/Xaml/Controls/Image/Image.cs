@@ -3,7 +3,6 @@ using System.Numerics;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Uno.Disposables;
 using Uno.Foundation.Logging;
 using Uno.UI.Composition;
 using Uno.UI.Xaml.Media;
@@ -13,7 +12,7 @@ namespace Microsoft.UI.Xaml.Controls
 {
 	partial class Image : FrameworkElement
 	{
-		private readonly SerialDisposable _sourceDisposable = new SerialDisposable();
+		private ImageSource.Subscription _subscription;
 		private Size _lastMeasuredSize;
 		private ICompositionSurface _currentSurface;
 		private CompositionSurfaceBrush _surfaceBrush;
@@ -40,7 +39,8 @@ namespace Microsoft.UI.Xaml.Controls
 			_currentSurface = null;
 			_pendingImageData = null;
 			_imageOpenedVersion = null;
-			_sourceDisposable.Disposable = null;
+			_subscription?.Applied(ImageData.Empty);
+			ReleaseSubscription();
 			_lastMeasuredSize = default;
 			InvalidateMeasure();
 
@@ -56,8 +56,9 @@ namespace Microsoft.UI.Xaml.Controls
 
 		private void InitializeImageSource(ImageSource source)
 		{
-			// Back in the tree, the sprite still draws _currentSurface (see OnUnloaded).
-			_sourceDisposable.Disposable = source.Subscribe(
+			// Back in the tree, the sprite still draws _currentSurface (see OnUnloaded). What it is given is drawn once
+			// measured, and acknowledged then (TryProcessPendingSource).
+			_subscription = source.Subscribe(
 				img =>
 				{
 					_pendingImageData = img;
@@ -65,7 +66,14 @@ namespace Microsoft.UI.Xaml.Controls
 
 					InvalidateMeasure();
 				},
-				shown: _currentSurface);
+				shown: _currentSurface,
+				appliedOnDelivery: false);
+		}
+
+		private void ReleaseSubscription()
+		{
+			_subscription?.Dispose();
+			_subscription = null;
 		}
 
 		protected override Size MeasureOverride(Size availableSize)
@@ -127,6 +135,9 @@ namespace Microsoft.UI.Xaml.Controls
 			}
 
 			var processedData = currentData.Value;
+
+			// The sprite draws this from now on: what it drew before can go once nothing else draws it.
+			_subscription?.Applied(processedData);
 
 			if (processedData.HasData)
 			{
@@ -200,7 +211,7 @@ namespace Microsoft.UI.Xaml.Controls
 
 			// The subscription was released on unload: subscribe again. A source that kept its data (shared through the
 			// cache, or not yet released) delivers it at once; one that released it decodes it again.
-			if (_sourceDisposable.Disposable is null && Source is { } source)
+			if (_subscription is null && Source is { } source)
 			{
 				InitializeImageSource(source);
 			}
@@ -213,9 +224,10 @@ namespace Microsoft.UI.Xaml.Controls
 			// Nothing displays this image while it is unloaded, so its subscription is released, which lets the source
 			// release its decoded pixels once they have waited (PendingImageReleases). The sprite keeps its brush: it is not
 			// drawn off the tree, an Image back in time shows its pixels even in a frame recorded before Loaded, and a
-			// released surface draws nothing (the release also drops the sprite's cached recording).
+			// released surface draws nothing (the release also drops the sprite's cached recording). Data not yet drawn is
+			// dropped: the source keeps what the sprite draws, for an Image that comes back with it.
 			_pendingImageData = null;
-			_sourceDisposable.Disposable = null;
+			ReleaseSubscription();
 		}
 
 		partial void OnMonochromeColorChanged()
