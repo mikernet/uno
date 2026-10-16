@@ -40,6 +40,9 @@ namespace Microsoft.UI.Xaml.Media
 		// Owned data the source replaced while a subscriber still showed it; released once none does.
 		private List<ImageData> _replacedImageData;
 
+		// Replaced data the last subscriber that showed it let go of, waiting to be released (see PendingImageReleases).
+		private List<(ImageData Data, PendingImageReleases.Entry Entry)> _unshownReplacedImageData;
+
 		// Changes whenever _imageData is replaced.
 		private int _dataVersion;
 
@@ -74,15 +77,22 @@ namespace Microsoft.UI.Xaml.Media
 		/// A callback that will be invoked each time the source has been updated
 		/// (i.e. a property has changed on the source AND the source has been re-opened)
 		/// </param>
-		internal IDisposable Subscribe(Action<ImageData> onSourceOpened)
+		/// <param name="shown">
+		/// What the subscriber still draws from an earlier subscription to this source (an Image back in the tree). While the
+		/// source has data or is opening, that is kept until the subscriber is given what replaced it.
+		/// </param>
+		internal IDisposable Subscribe(Action<ImageData> onSourceOpened, ICompositionSurface shown = null)
 		{
-			var subscription = new Subscription(onSourceOpened);
+			var subscription = new Subscription(onSourceOpened, KeepReplaced(shown));
 			_subscriptions.Add(subscription);
 			CancelPendingRelease();
 
 			if (_imageData.HasData)
 			{
 				subscription.Deliver(_imageData);
+
+				// A replaced image the subscriber still drew goes once the pass applies what replaced it, as after an open.
+				ReleaseReplacedNoLongerShown(afterDelivery: true);
 			}
 			else if (_subscriptions.Count == 1 && !_isOpening)
 			{
@@ -92,6 +102,7 @@ namespace Microsoft.UI.Xaml.Media
 			return Disposable.Create(() =>
 			{
 				_subscriptions.Remove(subscription);
+				ReleaseReplacedNoLongerShown(afterDelivery: false);
 
 				if (_subscriptions.Count == 0)
 				{
@@ -100,10 +111,10 @@ namespace Microsoft.UI.Xaml.Media
 			});
 		}
 
-		private sealed class Subscription(Action<ImageData> callback)
+		private sealed class Subscription(Action<ImageData> callback, ImageData shown)
 		{
-			// The data last delivered, which the subscriber may still be showing.
-			public ImageData Shown { get; private set; }
+			// The data last delivered (or still drawn from an earlier subscription), which the subscriber may still be showing.
+			public ImageData Shown { get; private set; } = shown;
 
 			public void Deliver(ImageData data)
 			{
@@ -130,9 +141,9 @@ namespace Microsoft.UI.Xaml.Media
 			// Data shared through the bitmap cache stays: the source never releases it.
 			if (this is not SvgImageSource
 				&& _pendingRelease is null
-				&& (IsReleasable(_imageData) || _replacedImageData is { Count: > 0 } || _isOpening))
+				&& (IsReleasable(_imageData) || _isOpening))
 			{
-				_pendingRelease = PendingImageReleases.Add(GetOwnedByteCount(), ReleaseUnused);
+				_pendingRelease = PendingImageReleases.Add(GetByteCount(_imageData), ReleaseUnused);
 			}
 		}
 
@@ -143,20 +154,6 @@ namespace Microsoft.UI.Xaml.Media
 				PendingImageReleases.Remove(pending);
 				_pendingRelease = null;
 			}
-		}
-
-		private long GetOwnedByteCount()
-		{
-			var count = GetByteCount(_imageData);
-			if (_replacedImageData is { } replaced)
-			{
-				foreach (var data in replaced)
-				{
-					count += GetByteCount(data);
-				}
-			}
-
-			return count;
 		}
 
 		private static long GetByteCount(ImageData data)
@@ -212,13 +209,25 @@ namespace Microsoft.UI.Xaml.Media
 				_replacedImageData = null;
 				replaced.ForEach(ReleaseSurface);
 			}
+
+			if (_unshownReplacedImageData is { } unshown)
+			{
+				_unshownReplacedImageData = null;
+				foreach (var (data, entry) in unshown)
+				{
+					PendingImageReleases.Remove(entry);
+					ReleaseSurface(data);
+				}
+			}
 		}
 
 		/// <summary>
-		/// Releases, after the layout pass that applies what the subscribers were last given (an Image applies it when
-		/// measured), the replaced data none of them still shows, so no frame is recorded with neither.
+		/// Hands the replaced data none of the subscribers still shows to <see cref="PendingImageReleases"/>. Once they were
+		/// given what replaced it, it is released after the layout pass that applies that (an Image applies it when
+		/// measured), so no frame is recorded with neither. When instead the last subscriber that showed it lets go of it,
+		/// it waits like data nothing subscribes to, and that subscriber can take it back (see <see cref="Subscribe"/>).
 		/// </summary>
-		private void ReleaseReplacedNoLongerShown()
+		private void ReleaseReplacedNoLongerShown(bool afterDelivery)
 		{
 			if (_replacedImageData is not { } replaced)
 			{
@@ -250,10 +259,60 @@ namespace Microsoft.UI.Xaml.Media
 				_replacedImageData = null;
 			}
 
-			if (unshown is not null)
+			if (unshown is null)
+			{
+				return;
+			}
+
+			if (afterDelivery)
 			{
 				PendingImageReleases.Add(0, () => unshown.ForEach(ReleaseSurface), delay: TimeSpan.Zero);
+				return;
 			}
+
+			_unshownReplacedImageData ??= new();
+			foreach (var data in unshown)
+			{
+				PendingImageReleases.Entry entry = null;
+				entry = PendingImageReleases.Add(GetByteCount(data), () =>
+				{
+					_unshownReplacedImageData?.RemoveAll(u => u.Entry == entry);
+					ReleaseSurface(data);
+				});
+				_unshownReplacedImageData.Add((data, entry));
+			}
+		}
+
+		/// <summary>
+		/// The replaced data a subscriber still draws, taken back from its wait if the last subscriber that showed it let go,
+		/// as long as the subscriber will be given what replaced it.
+		/// </summary>
+		private ImageData KeepReplaced(ICompositionSurface surface)
+		{
+			// A source that failed or was cleared gives nothing more: the subscriber must show nothing, not keep the old image.
+			// Without subscribers, Subscribe opens the source.
+			if (surface is null || !(_isOpening || _imageData.HasData || _subscriptions.Count == 0))
+			{
+				return default;
+			}
+
+			var index = _replacedImageData?.FindIndex(d => ReferenceEquals(d.CompositionSurface, surface)) ?? -1;
+			if (index >= 0)
+			{
+				return _replacedImageData[index];
+			}
+
+			index = _unshownReplacedImageData?.FindIndex(u => ReferenceEquals(u.Data.CompositionSurface, surface)) ?? -1;
+			if (index < 0)
+			{
+				return default;
+			}
+
+			var (data, entry) = _unshownReplacedImageData[index];
+			_unshownReplacedImageData.RemoveAt(index);
+			PendingImageReleases.Remove(entry);
+			(_replacedImageData ??= new()).Add(data);
+			return data;
 		}
 
 		private static bool IsReleasable(ImageData data) => !data.IsShared && data.CompositionSurface is CompositionImageSurface;
@@ -369,12 +428,12 @@ namespace Microsoft.UI.Xaml.Media
 				}
 			}
 
-			ReleaseReplacedNoLongerShown();
+			ReleaseReplacedNoLongerShown(afterDelivery: true);
 
-			// A decode that completed while nothing subscribes waits with what this source had.
+			// A decode that completed while nothing subscribes waits in place of the open.
 			if (_pendingRelease is { } pending)
 			{
-				PendingImageReleases.Resize(pending, GetOwnedByteCount());
+				PendingImageReleases.Resize(pending, GetByteCount(_imageData));
 			}
 		}
 

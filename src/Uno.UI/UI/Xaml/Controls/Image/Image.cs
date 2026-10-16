@@ -56,13 +56,16 @@ namespace Microsoft.UI.Xaml.Controls
 
 		private void InitializeImageSource(ImageSource source)
 		{
-			_sourceDisposable.Disposable = source.Subscribe(img =>
-			{
-				_pendingImageData = img;
-				_pendingImageVersion = source.SourceVersion;
+			// Back in the tree, the sprite still draws _currentSurface (see OnUnloaded).
+			_sourceDisposable.Disposable = source.Subscribe(
+				img =>
+				{
+					_pendingImageData = img;
+					_pendingImageVersion = source.SourceVersion;
 
-				InvalidateMeasure();
-			});
+					InvalidateMeasure();
+				},
+				shown: _currentSurface);
 		}
 
 		protected override Size MeasureOverride(Size availableSize)

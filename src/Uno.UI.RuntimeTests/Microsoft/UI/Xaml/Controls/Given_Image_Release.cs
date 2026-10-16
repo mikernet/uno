@@ -1101,6 +1101,155 @@ public class Given_Image_Release
 	}
 
 	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Image_Showing_Replaced_Pixels_Leaves_Then_They_Wait_Like_Undisplayed_Ones()
+	{
+		// While the replacement downloads, a second Image subscribes and shows nothing yet. The first Image, the only one
+		// showing the previous image, keeps it when moved within a pass; once it leaves, the previous image waits like any
+		// image nothing displays (here, over the limit by itself: until the end of the next pass), not for the download.
+		using var _ = DisableBitmapImageCache();
+		using var limit = SetMaxUndisplayedImageBytes(100_000);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var first = new StackPanel();
+			var second = new StackPanel();
+			await UITestHelper.Load(new StackPanel { Children = { first, second } }, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await AddAndWaitForOpened(first, image);
+			await WindowHelper.WaitForIdle();
+			var previous = GetSurface(bitmap);
+
+			bitmap.UriSource = server.Uri;
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the replacement is downloading");
+			var other = new Image { Width = 100, Height = 40, Source = bitmap };
+			second.Children.Add(other);
+			await WindowHelper.WaitForLoaded(other);
+			await WindowHelper.WaitForIdle();
+
+			first.Children.Remove(image);
+			second.Children.Add(image);
+			await WindowHelper.WaitForIdle();
+			Assert.IsNotNull(previous.Image, "An Image moved within the pass still shows the previous image, which must stay");
+
+			second.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+			Assert.IsNull(previous.Image, "Once nothing shows the previous image, it must not wait for the download");
+
+			var opened = TrackOpened(other);
+			server.ReleaseResponses();
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Image_Returns_After_Replacement_Arrived_Then_Replaced_Pixels_Released()
+	{
+		// An Image that left while the replacement downloaded comes back once it has arrived, still drawing the previous
+		// image, and is given the replacement at once: the previous image goes after that pass, not when its wait ends.
+		using var _ = DisableBitmapImageCache();
+		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await AddAndWaitForOpened(panel, image);
+			await WindowHelper.WaitForIdle();
+			var previous = GetSurface(bitmap);
+
+			bitmap.UriSource = server.Uri;
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the replacement is downloading");
+			panel.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+
+			server.ReleaseResponses();
+			await WindowHelper.WaitFor(() => bitmap.IsOpened, 10000, "Pre-condition: the replacement arrives while nothing subscribes");
+			Assert.IsNotNull(previous.Image, "Pre-condition: the previous image waits within the delay");
+
+			var opened = TrackOpened(image);
+			panel.Children.Add(image);
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(previous.Image, "Once the Image is given the replacement, the previous image must not wait for the delay");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Image_Returns_After_Source_Cleared_Then_Replaced_Pixels_Not_Kept()
+	{
+		// An Image that left while the replacement downloaded comes back, still drawing the previous image, after the source
+		// was cleared: nothing will replace that image for it, so it must not keep it. The image keeps waiting like any
+		// undisplayed one, so lowering the limit to 0 releases it after the next pass.
+		using var _ = DisableBitmapImageCache();
+		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await AddAndWaitForOpened(panel, image);
+			await WindowHelper.WaitForIdle();
+			var previous = GetSurface(bitmap);
+
+			bitmap.UriSource = server.Uri;
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the replacement is downloading");
+			var other = new Image { Width = 100, Height = 40, Source = bitmap };
+			panel.Children.Add(other);
+			await WindowHelper.WaitForLoaded(other);
+			await WindowHelper.WaitForIdle();
+
+			panel.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+			bitmap.UriSource = null;
+			await WindowHelper.WaitForIdle();
+
+			panel.Children.Add(image);
+			await WindowHelper.WaitForLoaded(image);
+			await WindowHelper.WaitForIdle();
+			Assert.IsNotNull(previous.Image, "Pre-condition: the previous image waits within the delay");
+
+			FeatureConfiguration.Image.MaxUndisplayedImageBytes = 0;
+			panel.Children.Add(new Border { Width = 10, Height = 10 });
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(previous.Image, "The Image back after the source was cleared must not keep the previous image");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Stream_Set_Again_From_Its_Completion_Then_Previous_Frames_Released()
 	{
