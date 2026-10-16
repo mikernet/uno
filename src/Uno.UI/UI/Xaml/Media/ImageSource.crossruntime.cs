@@ -32,14 +32,13 @@ namespace Microsoft.UI.Xaml.Media
 	partial class ImageSource
 	{
 		private readonly SerialDisposable _opening = new SerialDisposable();
-		private readonly List<Action<ImageData>> _subscriptions = new List<Action<ImageData>>();
+		private readonly List<Subscription> _subscriptions = new List<Subscription>();
 
 		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
 		private bool _isOpening;
 
-		// What the subscribers still show while the source opens what replaced it: more than one when a listener changed
-		// the source again while it was being notified, as the listeners it skipped still show the older data.
-		private List<ImageData> _outgoingImageData;
+		// Owned data the source replaced while a subscriber still showed it; released once none does.
+		private List<ImageData> _replacedImageData;
 
 		// Changes whenever _imageData is replaced.
 		private int _dataVersion;
@@ -77,12 +76,13 @@ namespace Microsoft.UI.Xaml.Media
 		/// </param>
 		internal IDisposable Subscribe(Action<ImageData> onSourceOpened)
 		{
-			_subscriptions.Add(onSourceOpened);
+			var subscription = new Subscription(onSourceOpened);
+			_subscriptions.Add(subscription);
 			CancelPendingRelease();
 
 			if (_imageData.HasData)
 			{
-				onSourceOpened(_imageData);
+				subscription.Deliver(_imageData);
 			}
 			else if (_subscriptions.Count == 1 && !_isOpening)
 			{
@@ -91,13 +91,25 @@ namespace Microsoft.UI.Xaml.Media
 
 			return Disposable.Create(() =>
 			{
-				_subscriptions.Remove(onSourceOpened);
+				_subscriptions.Remove(subscription);
 
 				if (_subscriptions.Count == 0)
 				{
 					ScheduleReleaseUnused();
 				}
 			});
+		}
+
+		private sealed class Subscription(Action<ImageData> callback)
+		{
+			// The data last delivered, which the subscriber may still be showing.
+			public ImageData Shown { get; private set; }
+
+			public void Deliver(ImageData data)
+			{
+				Shown = data;
+				callback(data);
+			}
 		}
 
 		/// <summary>
@@ -118,7 +130,7 @@ namespace Microsoft.UI.Xaml.Media
 			// Data shared through the bitmap cache stays: the source never releases it.
 			if (this is not SvgImageSource
 				&& _pendingRelease is null
-				&& (IsReleasable(_imageData) || _outgoingImageData is { Count: > 0 } || _isOpening))
+				&& (IsReleasable(_imageData) || _replacedImageData is { Count: > 0 } || _isOpening))
 			{
 				_pendingRelease = PendingImageReleases.Add(GetOwnedByteCount(), ReleaseUnused);
 			}
@@ -136,9 +148,9 @@ namespace Microsoft.UI.Xaml.Media
 		private long GetOwnedByteCount()
 		{
 			var count = GetByteCount(_imageData);
-			if (_outgoingImageData is { } outgoing)
+			if (_replacedImageData is { } replaced)
 			{
-				foreach (var data in outgoing)
+				foreach (var data in replaced)
 				{
 					count += GetByteCount(data);
 				}
@@ -157,7 +169,7 @@ namespace Microsoft.UI.Xaml.Media
 			// An open nothing waits for is stopped, which cancels an uncached download.
 			_opening.Disposable = null;
 			_isOpening = false;
-			ReleaseOutgoing();
+			ReleaseReplaced();
 
 			if (IsReleasable(_imageData))
 			{
@@ -179,29 +191,68 @@ namespace Microsoft.UI.Xaml.Media
 			if (_subscriptions.Count == 0)
 			{
 				CancelPendingRelease();
-				ReleaseOutgoing();
+				ReleaseReplaced();
 				ReleaseSurface(_imageData);
 			}
 			else if (IsReleasable(_imageData))
 			{
-				// WinUI also keeps the surface while it switches URIs, to avoid flickering (MUX Reference:
-				// CImageSource::ReloadImage, imagesource.cpp).
-				(_outgoingImageData ??= new()).Add(_imageData);
+				// The subscribers keep showing it until they have what replaces it, as WinUI keeps the surface while it
+				// switches URIs, to avoid flickering (MUX Reference: CImageSource::ReloadImage, imagesource.cpp).
+				(_replacedImageData ??= new()).Add(_imageData);
 			}
 
 			_imageData = ImageData.Empty;
 			_dataVersion++;
 		}
 
-		private void ReleaseOutgoing()
+		private void ReleaseReplaced()
 		{
-			if (_outgoingImageData is { } outgoing)
+			if (_replacedImageData is { } replaced)
 			{
-				_outgoingImageData = null;
-				foreach (var data in outgoing)
+				_replacedImageData = null;
+				replaced.ForEach(ReleaseSurface);
+			}
+		}
+
+		/// <summary>
+		/// Releases, after the layout pass that applies what the subscribers were last given (an Image applies it when
+		/// measured), the replaced data none of them still shows, so no frame is recorded with neither.
+		/// </summary>
+		private void ReleaseReplacedNoLongerShown()
+		{
+			if (_replacedImageData is not { } replaced)
+			{
+				return;
+			}
+
+			List<ImageData> unshown = null;
+			for (var i = replaced.Count - 1; i >= 0; i--)
+			{
+				var surface = replaced[i].CompositionSurface;
+
+				// A WriteableBitmap draws its new pixels into the same surface.
+				var isCurrent = ReferenceEquals(surface, _imageData.CompositionSurface);
+				if (!isCurrent && _subscriptions.Exists(s => ReferenceEquals(s.Shown.CompositionSurface, surface)))
 				{
-					ReleaseSurface(data);
+					continue;
 				}
+
+				if (!isCurrent)
+				{
+					(unshown ??= new()).Add(replaced[i]);
+				}
+
+				replaced.RemoveAt(i);
+			}
+
+			if (replaced.Count == 0)
+			{
+				_replacedImageData = null;
+			}
+
+			if (unshown is not null)
+			{
+				PendingImageReleases.Add(0, () => unshown.ForEach(ReleaseSurface), delay: TimeSpan.Zero);
 			}
 		}
 
@@ -298,54 +349,27 @@ namespace Microsoft.UI.Xaml.Media
 			_imageData = data; // We should also cache the targetWidth and targetHeight
 			var version = ++_dataVersion;
 
-			// What the subscribers showed before this; a change made while they are notified starts its own list.
-			var outgoing = _outgoingImageData;
-			_outgoingImageData = null;
-
 			if (this.Log().IsEnabled(LogLevel.Debug))
 			{
 				this.Log().Debug($"Image {this} opened with {data}");
 			}
 
 			// A listener can unsubscribe others, or change the source and so release this data: only listeners still
-			// subscribed get it, and only while it is still the source's.
-			var listeners = _subscriptions.ToArray();
-			var skipped = false;
-			foreach (var listener in listeners)
+			// subscribed get it, and only while it is still the source's. The ones a change skipped keep what they had.
+			foreach (var subscription in _subscriptions.ToArray())
 			{
-				if (_subscriptions.Contains(listener))
+				if (_dataVersion != version)
 				{
-					if (_dataVersion != version)
-					{
-						skipped = true;
-						break;
-					}
+					break;
+				}
 
-					listener(data);
+				if (_subscriptions.Contains(subscription))
+				{
+					subscription.Deliver(data);
 				}
 			}
 
-			if (outgoing is not null && skipped)
-			{
-				// The subscribers a change cut the notification short of still show the older data, so it stays.
-				if (_outgoingImageData is { } added)
-				{
-					outgoing.AddRange(added);
-				}
-
-				_outgoingImageData = outgoing;
-			}
-			else if (outgoing is not null)
-			{
-				// No subscriber was skipped: what they showed before goes after the layout pass that applies this data (an Image
-				// applies it when measured), so no frame is recorded with neither. A WriteableBitmap draws its new pixels into
-				// the same surface.
-				outgoing.RemoveAll(old => ReferenceEquals(old.CompositionSurface, data.CompositionSurface));
-				if (outgoing.Count > 0)
-				{
-					PendingImageReleases.Add(0, () => outgoing.ForEach(ReleaseSurface), delay: TimeSpan.Zero);
-				}
-			}
+			ReleaseReplacedNoLongerShown();
 
 			// A decode that completed while nothing subscribes waits with what this source had.
 			if (_pendingRelease is { } pending)

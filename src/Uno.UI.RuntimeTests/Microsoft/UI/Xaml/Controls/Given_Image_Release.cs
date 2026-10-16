@@ -900,6 +900,66 @@ public class Given_Image_Release
 	}
 
 	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Source_Changed_During_Successive_Notifications_Then_Only_Shown_Pixels_Kept()
+	{
+		// A brush notified before an Image sets the next stream from each ImageOpened, so every notification stops before
+		// the Image: the Image keeps showing the first image throughout, while the brush moves through the others, and
+		// each image the brush moved past must go.
+		var square = await ReadAssetAsync(SquareAssetUri);
+		var tall = await ReadAssetAsync(TallAssetUri);
+		using var delay = ReleaseAfterLayoutPass();
+		using var decoder = TrackingDecoder.Install();
+
+		try
+		{
+			var bitmap = new BitmapImage();
+			var brush = new ImageBrush { ImageSource = bitmap };
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await UITestHelper.Load(image);
+
+			var opened = TrackOpened(image);
+			await bitmap.SetSourceAsync(new MemoryStream(square));
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+			var first = GetSurface(bitmap);
+
+			var remaining = 6;
+			var mostKept = 0;
+			var firstKept = true;
+			var done = new TaskCompletionSource();
+			brush.ImageOpened += (_, _) =>
+			{
+				mostKept = Math.Max(mostKept, decoder.All.Count(d => !d.IsReleased));
+				firstKept &= first.Image is not null;
+
+				if (remaining-- > 0)
+				{
+					_ = bitmap.SetSourceAsync(new MemoryStream(remaining % 2 == 0 ? square : tall));
+				}
+				else
+				{
+					done.TrySetResult();
+				}
+			};
+
+			_ = bitmap.SetSourceAsync(new MemoryStream(tall));
+			await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsTrue(firstKept, "The Image, skipped by every notification, still shows the first image, which must stay");
+			Assert.IsTrue(mostKept <= 4, $"Only the images still shown (and one being replaced) may be kept, not {mostKept}");
+			Assert.IsNull(first.Image, "Once the Image has the last image, the first is released");
+			Assert.IsTrue(decoder.All.Count(d => !d.IsReleased) <= 1, "Only the image shown is kept at the end");
+			GC.KeepAlive(brush);
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Source_Changed_By_Last_Subscriber_Then_Previous_Pixels_Released()
