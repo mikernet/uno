@@ -308,5 +308,16 @@ namespace Microsoft.UI.Xaml.Media
 				PendingImageReleases.Resize(pending, GetOwnedByteCount());
 			}
 		}
+
+		/// <summary>
+		/// Opens the source again for the subscribers it still has, after Dispose dropped its data.
+		/// </summary>
+		private void ReopenForSubscribers()
+		{
+			if (_subscriptions.Count > 0)
+			{
+				Open();
+			}
+		}
 	}
 }
