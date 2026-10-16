@@ -146,6 +146,11 @@ namespace Microsoft.UI.Xaml.Controls
 			}
 			else if (processedData is { Kind: ImageDataKind.Error })
 			{
+				// A source that failed to open shows nothing, not the image it had before: WinUI drops its surfaces
+				// (MUX Reference: CImageSource::FireImageFailed, imagesource.cpp), as the source releases data it owns.
+				_currentSurface = null;
+				_imageSprite.Brush = null;
+
 				ImageFailed?.Invoke(this, new(
 					this,
 					processedData.Error?.Message ?? "Unknown error"));

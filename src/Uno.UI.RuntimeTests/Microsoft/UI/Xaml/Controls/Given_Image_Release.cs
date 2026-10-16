@@ -799,6 +799,50 @@ public class Given_Image_Release
 
 	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Source_Fails_Then_Previous_Image_Not_Shown()
+	{
+		// WinUI drops the surfaces of a source that failed to open, so the Image shows nothing rather than its previous
+		// image, whether that image was shared through the cache (and stays alive) or owned (and released).
+		await AssertFailureClearsImage(cacheEnabled: true);
+		await AssertFailureClearsImage(cacheEnabled: false);
+
+		static async Task AssertFailureClearsImage(bool cacheEnabled)
+		{
+			using var cache = SetBitmapImageCache(cacheEnabled);
+			using var delay = ReleaseAfterLayoutPass();
+
+			try
+			{
+				var bitmap = new BitmapImage(new Uri(AssetUri));
+				var image = new Image { Source = bitmap };
+				var panel = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
+				await UITestHelper.Load(panel, x => x.IsLoaded);
+				await AddAndWaitForOpened(panel, image);
+				await WindowHelper.WaitForIdle();
+				var surface = GetSurface(bitmap);
+				Assert.IsTrue(image.ActualWidth > 0, "Pre-condition: the Image shows its source");
+
+				var failed = new TaskCompletionSource();
+				image.ImageFailed += (_, _) => failed.TrySetResult();
+				bitmap.UriSource = new Uri("ms-appx:///Assets/does-not-exist.png");
+				await failed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+				await WindowHelper.WaitForIdle();
+
+				Assert.AreEqual(0, image.ActualWidth, $"The Image must not show its previous image once its source failed (cache {(cacheEnabled ? "on" : "off")})");
+				if (!cacheEnabled)
+				{
+					Assert.IsNull(surface.Image, "The source releases the image it owned");
+				}
+			}
+			finally
+			{
+				WindowHelper.WindowContent = null;
+			}
+		}
+	}
+
+	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Source_Changed_While_Displayed_Then_Previous_Pixels_Kept_Until_New_Shown()
 	{
 		// A source that changes while displayed keeps showing its previous pixels until the new ones are decoded, as on
