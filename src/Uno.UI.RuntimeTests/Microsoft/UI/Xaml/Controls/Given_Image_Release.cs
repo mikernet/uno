@@ -842,6 +842,145 @@ public class Given_Image_Release
 	}
 
 	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Source_Changed_During_Notification_Then_Skipped_Subscriber_Keeps_Its_Pixels()
+	{
+		// An ImageBrush notified before an Image changes the source again from its ImageOpened, to one that is still
+		// downloading: the notification stops before the Image, which still shows the first image, so that one must stay
+		// until the third arrives. The second image is a stream: a UriSource change would subscribe the brush again, last.
+		var square = await ReadAssetAsync(SquareAssetUri);
+		var tall = await ReadAssetAsync(TallAssetUri);
+		using var _ = DisableBitmapImageCache();
+		using var delay = ReleaseAfterLayoutPass();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var bitmap = new BitmapImage();
+			var brush = new ImageBrush { ImageSource = bitmap };
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await UITestHelper.Load(image);
+
+			var opened = TrackOpened(image);
+			await bitmap.SetSourceAsync(new MemoryStream(square));
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+			var first = GetSurface(bitmap);
+
+			var armed = true;
+			brush.ImageOpened += (_, _) =>
+			{
+				if (armed)
+				{
+					armed = false;
+					bitmap.UriSource = server.Uri;
+				}
+			};
+
+			var second = bitmap.SetSourceAsync(new MemoryStream(tall));
+			await WindowHelper.WaitFor(() => !armed, 10000, "Pre-condition: the brush gets the second image and changes the source");
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the third image is downloading");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNotNull(first.Image, "The Image the notification skipped still shows the first image, which must stay");
+
+			opened = TrackOpened(image);
+			server.ReleaseResponses();
+			await opened.WaitAsync(TimeSpan.FromSeconds(10));
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(first.Image, "Once every subscriber has the third image, the first is released");
+			GC.KeepAlive(brush);
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Source_Changed_By_Last_Subscriber_Then_Previous_Pixels_Released()
+	{
+		// The same change made by the last subscriber skips nobody: every subscriber shows the second image, so the first
+		// goes after the layout pass, without waiting for the third.
+		using var _ = DisableBitmapImageCache();
+		using var delay = ReleaseAfterLayoutPass();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await LoadAndWaitForOpened(image);
+			await WindowHelper.WaitForIdle();
+			var first = GetSurface(bitmap);
+			var brush = new ImageBrush { ImageSource = bitmap };
+
+			var armed = true;
+			brush.ImageOpened += (_, _) =>
+			{
+				if (armed)
+				{
+					armed = false;
+					bitmap.UriSource = server.Uri;
+				}
+			};
+
+			bitmap.UriSource = new Uri(TallAssetUri);
+			await WindowHelper.WaitFor(() => !armed, 10000, "Pre-condition: the brush gets the second image and changes the source");
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the third image is downloading");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(first.Image, "No subscriber shows the first image anymore, so it must not wait for the third");
+			GC.KeepAlive(brush);
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Stream_Set_Again_From_Its_Completion_Then_Previous_Frames_Released()
+	{
+		// A preview that sets the next frame as soon as SetSourceAsync completes runs inside the notification of the
+		// frame it awaited: each change is made by the last subscriber, so the frames shown before must still go.
+		var square = await ReadAssetAsync(SquareAssetUri);
+		var tall = await ReadAssetAsync(TallAssetUri);
+		using var delay = ReleaseAfterLayoutPass();
+		using var decoder = TrackingDecoder.Install();
+
+		try
+		{
+			var bitmap = new BitmapImage();
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await UITestHelper.Load(image);
+
+			// Measured between frames, without awaiting anything else, so the loop keeps resuming inside the notifications.
+			var mostKept = 0;
+			for (var i = 0; i < 20; i++)
+			{
+				await bitmap.SetSourceAsync(new MemoryStream(i % 2 == 0 ? square : tall));
+				mostKept = Math.Max(mostKept, decoder.All.Count(d => !d.IsReleased));
+			}
+
+			await WindowHelper.WaitFor(() => bitmap.IsOpened, 10000, "Pre-condition: the last frame is decoded");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsTrue(mostKept <= 4, $"Only the frames being shown and replaced may be kept, not {mostKept}");
+			Assert.IsTrue(decoder.All.Count(d => !d.IsReleased) <= 2, "Once the frames stop, only the last one is kept");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Source_Changed_While_Displayed_Then_Previous_Pixels_Kept_Until_New_Shown()
 	{

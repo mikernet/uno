@@ -37,8 +37,9 @@ namespace Microsoft.UI.Xaml.Media
 		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
 		private bool _isOpening;
 
-		// What the subscribers still show while the source opens what replaced it.
-		private ImageData _outgoingImageData;
+		// What the subscribers still show while the source opens what replaced it: more than one when a listener changed
+		// the source again while it was being notified, as the listeners it skipped still show the older data.
+		private List<ImageData> _outgoingImageData;
 
 		// Changes whenever _imageData is replaced.
 		private int _dataVersion;
@@ -117,7 +118,7 @@ namespace Microsoft.UI.Xaml.Media
 			// Data shared through the bitmap cache stays: the source never releases it.
 			if (this is not SvgImageSource
 				&& _pendingRelease is null
-				&& (IsReleasable(_imageData) || IsReleasable(_outgoingImageData) || _isOpening))
+				&& (IsReleasable(_imageData) || _outgoingImageData is { Count: > 0 } || _isOpening))
 			{
 				_pendingRelease = PendingImageReleases.Add(GetOwnedByteCount(), ReleaseUnused);
 			}
@@ -132,7 +133,19 @@ namespace Microsoft.UI.Xaml.Media
 			}
 		}
 
-		private long GetOwnedByteCount() => GetByteCount(_imageData) + GetByteCount(_outgoingImageData);
+		private long GetOwnedByteCount()
+		{
+			var count = GetByteCount(_imageData);
+			if (_outgoingImageData is { } outgoing)
+			{
+				foreach (var data in outgoing)
+				{
+					count += GetByteCount(data);
+				}
+			}
+
+			return count;
+		}
 
 		private static long GetByteCount(ImageData data)
 			=> IsReleasable(data) ? ((CompositionImageSurface)data.CompositionSurface!).DecodedByteCount : 0;
@@ -172,9 +185,8 @@ namespace Microsoft.UI.Xaml.Media
 			else if (IsReleasable(_imageData))
 			{
 				// WinUI also keeps the surface while it switches URIs, to avoid flickering (MUX Reference:
-				// CImageSource::ReloadImage, imagesource.cpp). Data still being opened leaves the outgoing one in place.
-				ReleaseOutgoing();
-				_outgoingImageData = _imageData;
+				// CImageSource::ReloadImage, imagesource.cpp).
+				(_outgoingImageData ??= new()).Add(_imageData);
 			}
 
 			_imageData = ImageData.Empty;
@@ -183,8 +195,14 @@ namespace Microsoft.UI.Xaml.Media
 
 		private void ReleaseOutgoing()
 		{
-			ReleaseSurface(_outgoingImageData);
-			_outgoingImageData = ImageData.Empty;
+			if (_outgoingImageData is { } outgoing)
+			{
+				_outgoingImageData = null;
+				foreach (var data in outgoing)
+				{
+					ReleaseSurface(data);
+				}
+			}
 		}
 
 		private static bool IsReleasable(ImageData data) => !data.IsShared && data.CompositionSurface is CompositionImageSurface;
@@ -280,9 +298,9 @@ namespace Microsoft.UI.Xaml.Media
 			_imageData = data; // We should also cache the targetWidth and targetHeight
 			var version = ++_dataVersion;
 
-			// What the subscribers showed until now goes once they show this.
+			// What the subscribers showed before this; a change made while they are notified starts its own list.
 			var outgoing = _outgoingImageData;
-			_outgoingImageData = ImageData.Empty;
+			_outgoingImageData = null;
 
 			if (this.Log().IsEnabled(LogLevel.Debug))
 			{
@@ -291,24 +309,42 @@ namespace Microsoft.UI.Xaml.Media
 
 			// A listener can unsubscribe others, or change the source and so release this data: only listeners still
 			// subscribed get it, and only while it is still the source's.
-			foreach (var listener in _subscriptions.ToArray())
+			var listeners = _subscriptions.ToArray();
+			var skipped = false;
+			foreach (var listener in listeners)
 			{
-				if (_dataVersion != version)
-				{
-					break;
-				}
-
 				if (_subscriptions.Contains(listener))
 				{
+					if (_dataVersion != version)
+					{
+						skipped = true;
+						break;
+					}
+
 					listener(data);
 				}
 			}
 
-			// A WriteableBitmap draws its new pixels into the same surface. Others go after the layout pass that applies
-			// the new data (an Image applies it when measured), so no frame is recorded with neither.
-			if (IsReleasable(outgoing) && !ReferenceEquals(outgoing.CompositionSurface, data.CompositionSurface))
+			if (outgoing is not null && skipped)
 			{
-				PendingImageReleases.Add(0, () => ReleaseSurface(outgoing), delay: TimeSpan.Zero);
+				// The subscribers a change cut the notification short of still show the older data, so it stays.
+				if (_outgoingImageData is { } added)
+				{
+					outgoing.AddRange(added);
+				}
+
+				_outgoingImageData = outgoing;
+			}
+			else if (outgoing is not null)
+			{
+				// No subscriber was skipped: what they showed before goes after the layout pass that applies this data (an Image
+				// applies it when measured), so no frame is recorded with neither. A WriteableBitmap draws its new pixels into
+				// the same surface.
+				outgoing.RemoveAll(old => ReferenceEquals(old.CompositionSurface, data.CompositionSurface));
+				if (outgoing.Count > 0)
+				{
+					PendingImageReleases.Add(0, () => outgoing.ForEach(ReleaseSurface), delay: TimeSpan.Zero);
+				}
 			}
 
 			// A decode that completed while nothing subscribes waits with what this source had.
