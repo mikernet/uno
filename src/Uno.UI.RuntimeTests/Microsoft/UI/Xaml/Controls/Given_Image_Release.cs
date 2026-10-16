@@ -689,6 +689,39 @@ public class Given_Image_Release
 
 	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Image_Leaves_Then_Its_Pixels_Wait_Once()
+	{
+		// An Image that leaves with the source's current image has it wait once: within a limit that fits it exactly, it stays.
+		using var _ = DisableBitmapImageCache();
+		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+
+		try
+		{
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await AddAndWaitForOpened(panel, image);
+			await WindowHelper.WaitForIdle();
+			var surface = GetSurface(bitmap);
+
+			// Set in the same turn as the removal, so the image alone fits the limit exactly.
+			FeatureConfiguration.Image.MaxUndisplayedImageBytes = surface.DecodedByteCount;
+			panel.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNotNull(surface.Image, "The image waits once, within the limit");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Replaced_Image_Released_After_Pass_Then_Older_Waiting_Image_Kept()
 	{
 		// An image waits within the limit when another source's displayed image is replaced. The replaced image goes after

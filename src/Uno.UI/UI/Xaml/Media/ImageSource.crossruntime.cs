@@ -39,19 +39,22 @@ namespace Microsoft.UI.Xaml.Media
 		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
 		private bool _isOpening;
 
-		// Owned data the source replaced while a subscriber still drew it or was given it; released once none does.
-		private List<ImageData> _replacedImageData;
+		// What the source keeps of each surface its subscriptions draw or were given, or that it replaced while they did.
+		private Dictionary<ICompositionSurface, Held> _held;
 
-		// Replaced data no subscriber draws or was given, waiting to be released (see PendingImageReleases) unless one draws
-		// it again.
-		private List<(ImageData Data, PendingImageReleases.Entry Entry)> _unshownReplacedImageData;
+		private sealed class Held(ImageData data)
+		{
+			internal ImageData Data = data;
 
-		// Owned surfaces an Image drew when it left. Once no subscriber draws them, they wait like data nothing subscribes
-		// to rather than going after the pass, as that Image may come back with them.
-		private List<ICompositionSurface> _leftWithSurfaces;
+			// How many times the subscriptions' Shown and Pending refer to it.
+			internal int Count;
 
-		// How many times the subscriptions' Shown and Pending refer to each surface, so whether one holds it is O(1).
-		private Dictionary<ICompositionSurface, int> _holdCounts;
+			// An Image drew it when it left: once nothing holds it, it waits the full delay, for that Image to come back.
+			internal bool LeftWith;
+
+			// Replaced, releasable and held by none: its wait to be released.
+			internal PendingImageReleases.Entry Wait;
+		}
 
 		// Changes whenever _imageData is replaced.
 		private int _dataVersion;
@@ -105,7 +108,6 @@ namespace Microsoft.UI.Xaml.Media
 			if (_imageData.HasData)
 			{
 				subscription.Deliver(_imageData);
-				ReleaseReplacedNoLongerShown(TimeSpan.Zero);
 			}
 			else if (_subscriptions.Count == 1 && !_isOpening)
 			{
@@ -219,15 +221,14 @@ namespace Microsoft.UI.Xaml.Media
 			_subscriptions.Remove(subscription.Node);
 
 			// An Image keeps drawing what it drew off the tree (its sprite), and may come back with it.
-			var surface = subscription.Shown.CompositionSurface;
-			if (!subscription.AppliedOnDelivery && IsReleasable(subscription.Shown) && _leftWithSurfaces?.Contains(surface) != true)
+			if (!subscription.AppliedOnDelivery && IsReleasable(subscription.Shown))
 			{
-				(_leftWithSurfaces ??= new()).Add(surface);
+				GetHeld(subscription.Shown).LeftWith = true;
 			}
 
 			CountHold(subscription.Shown, -1);
 			CountHold(subscription.Pending, -1);
-			ReleaseReplacedNoLongerShown(delay: null);
+			ReleaseUnheld(delay: null);
 
 			if (_subscriptions.Count == 0)
 			{
@@ -235,23 +236,40 @@ namespace Microsoft.UI.Xaml.Media
 			}
 		}
 
-		private void OnApplied() => ReleaseReplacedNoLongerShown(TimeSpan.Zero);
+		private void OnApplied() => ReleaseUnheld(TimeSpan.Zero);
+
+		private Held GetHeld(ImageData data)
+		{
+			var held = _held ??= new(ReferenceEqualityComparer.Instance);
+			if (!held.TryGetValue(data.CompositionSurface, out var record))
+			{
+				held[data.CompositionSurface] = record = new Held(data);
+			}
+
+			return record;
+		}
 
 		private void CountHold(ImageData data, int change)
 		{
-			if (data.CompositionSurface is { } surface)
+			if (data.CompositionSurface is not { } surface)
 			{
-				var counts = _holdCounts ??= new(ReferenceEqualityComparer.Instance);
-				var count = counts.GetValueOrDefault(surface) + change;
-				Debug.Assert(count >= 0, "A subscription let go of a surface it did not hold.");
-				if (count > 0)
-				{
-					counts[surface] = count;
-				}
-				else
-				{
-					counts.Remove(surface);
-				}
+				return;
+			}
+
+			var held = GetHeld(data);
+			held.Count += change;
+			Debug.Assert(held.Count >= 0, "A subscription let go of a surface it did not hold.");
+
+			if (change > 0 && held.Wait is { } wait)
+			{
+				// Held again: it no longer waits.
+				PendingImageReleases.Remove(wait);
+				held.Wait = null;
+			}
+			else if (held.Count == 0 && !held.LeftWith && (ReferenceEquals(surface, _imageData.CompositionSurface) || !IsReleasable(held.Data)))
+			{
+				// The current data, or data the cache shares: nothing to wait for.
+				_held.Remove(surface);
 			}
 		}
 
@@ -320,97 +338,76 @@ namespace Microsoft.UI.Xaml.Media
 			else if (IsReleasable(_imageData))
 			{
 				// The subscribers keep showing it until they have what replaces it, as WinUI keeps the surface while it
-				// switches URIs, to avoid flickering (MUX Reference: CImageSource::ReloadImage, imagesource.cpp).
-				(_replacedImageData ??= new()).Add(_imageData);
+				// switches URIs, to avoid flickering (MUX Reference: CImageSource::ReloadImage, imagesource.cpp). Its wait
+				// starts once nothing holds it, never here: a WriteableBitmap opens into the same surface right after.
+				GetHeld(_imageData);
 			}
 
 			_imageData = ImageData.Empty;
 			_dataVersion++;
 		}
 
+		// Nothing subscribes, so nothing holds what the source replaced.
 		private void ReleaseReplaced()
 		{
-			if (_replacedImageData is { } replaced)
+			if (_held is { } held)
 			{
-				_replacedImageData = null;
-				replaced.ForEach(ReleaseSurface);
-			}
-
-			if (_unshownReplacedImageData is { } unshown)
-			{
-				_unshownReplacedImageData = null;
-				foreach (var (data, entry) in unshown)
+				_held = null;
+				foreach (var (surface, record) in held)
 				{
-					PendingImageReleases.Remove(entry);
-					ReleaseSurface(data);
+					if (record.Wait is { } wait)
+					{
+						PendingImageReleases.Remove(wait);
+					}
+
+					if (!ReferenceEquals(surface, _imageData.CompositionSurface))
+					{
+						ReleaseSurface(record.Data);
+					}
 				}
 			}
-
-			_leftWithSurfaces = null;
 		}
 
 		/// <summary>
-		/// Starts the wait of the replaced data no subscriber draws or was given anymore: after the pass (a zero
-		/// <paramref name="delay"/>), or the full delay for what an Image left with (see <see cref="KeepReplaced"/>).
+		/// Starts the wait of the replaced data nothing holds anymore: after the pass (a zero <paramref name="delay"/>), or
+		/// the full delay for what an Image left with, so it can come back with it (see <see cref="KeepReplaced"/>).
 		/// </summary>
-		private void ReleaseReplacedNoLongerShown(TimeSpan? delay)
+		private void ReleaseUnheld(TimeSpan? delay)
 		{
-			if (_replacedImageData is not { } replaced)
+			if (_held is null)
 			{
 				return;
 			}
 
-			List<(ImageData Data, TimeSpan? Delay)> unshown = null;
-			for (var i = replaced.Count - 1; i >= 0; i--)
+			foreach (var (surface, held) in _held)
 			{
-				var surface = replaced[i].CompositionSurface;
-
-				// A WriteableBitmap draws its new pixels into the same surface.
-				var isCurrent = ReferenceEquals(surface, _imageData.CompositionSurface);
-				if (!isCurrent && _holdCounts?.ContainsKey(surface) == true)
+				// A WriteableBitmap draws its new pixels into the current surface, which never waits.
+				if (held.Count > 0
+					|| held.Wait is not null
+					|| ReferenceEquals(surface, _imageData.CompositionSurface)
+					|| !IsReleasable(held.Data))
 				{
 					continue;
 				}
 
-				if (!isCurrent)
-				{
-					var wait = _leftWithSurfaces?.Remove(surface) == true ? null : delay;
-					(unshown ??= new()).Add((replaced[i], wait));
-				}
+				var wait = held.LeftWith ? null : delay;
+				var data = held.Data;
 
-				replaced.RemoveAt(i);
-			}
-
-			if (replaced.Count == 0)
-			{
-				_replacedImageData = null;
-			}
-
-			if (unshown is null)
-			{
-				return;
-			}
-
-			_unshownReplacedImageData ??= new();
-			foreach (var (data, wait) in unshown)
-			{
-				PendingImageReleases.Entry entry = null;
-				// Data a subscriber stopped drawing goes after the pass anyway: counting it would have older waiting images go too.
-				entry = PendingImageReleases.Add(
+				// What goes after the pass is released then anyway: counting it would have older waiting images go too.
+				held.Wait = PendingImageReleases.Add(
 					wait == TimeSpan.Zero ? 0 : GetByteCount(data),
 					() =>
 					{
-						_unshownReplacedImageData?.RemoveAll(u => u.Entry == entry);
+						_held?.Remove(surface);
 						ReleaseSurface(data);
 					},
 					wait);
-				_unshownReplacedImageData.Add((data, entry));
 			}
 		}
 
 		/// <summary>
 		/// What a subscriber back with <paramref name="surface"/> draws: the current data, or replaced data, taken back from its
-		/// wait if no subscriber drew it anymore, as long as the subscriber will be given what replaced it.
+		/// wait, as long as the subscriber will be given what replaced it.
 		/// </summary>
 		private ImageData KeepReplaced(ICompositionSurface surface)
 		{
@@ -421,29 +418,14 @@ namespace Microsoft.UI.Xaml.Media
 				return default;
 			}
 
-			_leftWithSurfaces?.Remove(surface);
-			if (ReferenceEquals(surface, _imageData.CompositionSurface))
+			if (_held?.TryGetValue(surface, out var held) == true)
 			{
-				return _imageData;
+				// The subscription's hold, counted once it is created, ends the wait.
+				held.LeftWith = false;
+				return held.Data;
 			}
 
-			var index = _replacedImageData?.FindIndex(d => ReferenceEquals(d.CompositionSurface, surface)) ?? -1;
-			if (index >= 0)
-			{
-				return _replacedImageData[index];
-			}
-
-			index = _unshownReplacedImageData?.FindIndex(u => ReferenceEquals(u.Data.CompositionSurface, surface)) ?? -1;
-			if (index < 0)
-			{
-				return default;
-			}
-
-			var (data, entry) = _unshownReplacedImageData[index];
-			_unshownReplacedImageData.RemoveAt(index);
-			PendingImageReleases.Remove(entry);
-			(_replacedImageData ??= new()).Add(data);
-			return data;
+			return ReferenceEquals(surface, _imageData.CompositionSurface) ? _imageData : default;
 		}
 
 		private static bool IsReleasable(ImageData data) => !data.IsShared && data.CompositionSurface is CompositionImageSurface;
@@ -563,7 +545,7 @@ namespace Microsoft.UI.Xaml.Media
 				}
 			}
 
-			ReleaseReplacedNoLongerShown(TimeSpan.Zero);
+			ReleaseUnheld(TimeSpan.Zero);
 
 			// A decode that completed while nothing subscribes waits in place of the open.
 			if (_pendingRelease is { } pending)
