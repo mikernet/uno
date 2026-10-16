@@ -12,6 +12,9 @@ namespace Microsoft.UI.Xaml.Media
 		partial void OnSourceChangedPartial(ImageSource newValue, ImageSource oldValue)
 		{
 			ImageDataCache = default;
+
+			// A UriSource change needs no new subscription: the source opens the new URI for this one, and the brush draws what
+			// it has until then, as an Image does (and as WinUI keeps the surface while it switches URIs).
 			_sourceSubscription.Disposable = newValue?.Subscribe(OnSourceOpened);
 		}
 

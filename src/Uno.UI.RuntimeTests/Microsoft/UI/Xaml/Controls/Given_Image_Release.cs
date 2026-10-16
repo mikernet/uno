@@ -848,7 +848,7 @@ public class Given_Image_Release
 	{
 		// An ImageBrush notified before an Image changes the source again from its ImageOpened, to one that is still
 		// downloading: the notification stops before the Image, which still shows the first image, so that one must stay
-		// until the third arrives. The second image is a stream: a UriSource change would subscribe the brush again, last.
+		// until the third arrives.
 		var square = await ReadAssetAsync(SquareAssetUri);
 		var tall = await ReadAssetAsync(TallAssetUri);
 		using var _ = DisableBitmapImageCache();
@@ -1037,6 +1037,62 @@ public class Given_Image_Release
 
 			Assert.IsNull(first.Image, "No subscriber shows the first image anymore, so it must not wait for the third");
 			GC.KeepAlive(brush);
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Rendered_Brush_Changes_UriSource_Then_It_Keeps_Drawing_Until_Replaced()
+	{
+		// A drawn ImageBrush whose ImageOpened sets a UriSource that is still downloading keeps drawing the image it has,
+		// as an Image does, so that image must stay until the download arrives.
+		using var _ = DisableBitmapImageCache();
+		using var delay = ReleaseAfterLayoutPass();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var brush = new ImageBrush { ImageSource = bitmap };
+			var opened = 0;
+			var armed = false;
+			brush.ImageOpened += (_, _) =>
+			{
+				opened++;
+				if (armed)
+				{
+					armed = false;
+					bitmap.UriSource = server.Uri;
+				}
+			};
+
+			var border = new Border { Width = 100, Height = 40, Background = brush };
+			await UITestHelper.Load(border);
+			await WindowHelper.WaitFor(() => opened == 1, 10000, "Pre-condition: the brush gets the first image");
+			await WindowHelper.WaitForIdle();
+
+			armed = true;
+			bitmap.UriSource = new Uri(SquareAssetUri);
+			await WindowHelper.WaitFor(() => !armed, 10000, "Pre-condition: the brush gets the second image and changes the source");
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the third image is downloading");
+			await WindowHelper.WaitForIdle();
+
+			var compositionBrush = (CompositionSurfaceBrush)brush.GetOrCreateCompositionBrush(border.Visual.Compositor);
+			var drawn = compositionBrush.Surface as CompositionImageSurface;
+			Assert.IsNotNull(drawn, "Pre-condition: the brush draws an image");
+			Assert.IsNotNull(drawn.Image, "The brush still draws the second image, which must stay until the third arrives");
+
+			server.ReleaseResponses();
+			await WindowHelper.WaitFor(() => opened == 3, 10000, "Pre-condition: the brush gets the third image");
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreNotSame(drawn, compositionBrush.Surface, "The brush draws the third image");
+			Assert.IsNull(drawn.Image, "Once the brush draws the third image, the second is released");
 		}
 		finally
 		{
