@@ -1763,6 +1763,54 @@ public class Given_Image_Release
 
 	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Many_Images_Share_A_Replaced_Source_Then_Previous_Image_Kept_Until_Last_Draws_Replacement()
+	{
+		// Fifty Images and a collapsed one draw a bitmap whose UriSource changes, and one more Image leaves while the
+		// replacement loads. The previous image stays while any of them still draws it: the collapsed Image, not measured,
+		// keeps it, and once it is shown and draws the replacement, the previous image is released after the pass.
+		using var _ = DisableBitmapImageCache();
+		using var limit = ReleaseAfterLayoutPass();
+
+		try
+		{
+			var panel = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var images = Enumerable.Range(0, 50).Select(_ => new Image { Source = bitmap }).ToArray();
+			var collapsed = new Image { Source = bitmap };
+			var leaving = new Image { Source = bitmap };
+			foreach (var image in images.Concat(new[] { collapsed, leaving }))
+			{
+				panel.Children.Add(image);
+			}
+
+			await WindowHelper.WaitFor(() => images.Concat(new[] { collapsed, leaving }).All(i => i.ActualWidth > 99), 10000, "Pre-condition: every Image draws the first image");
+			var previous = GetSurface(bitmap);
+			collapsed.Visibility = Visibility.Collapsed;
+			await WindowHelper.WaitForIdle();
+
+			bitmap.UriSource = new Uri(TallAssetUri);
+			panel.Children.Remove(leaving);
+			await WindowHelper.WaitFor(() => images.All(i => i.ActualWidth is > 0 and < 99), 10000, "Pre-condition: the shown Images draw the second image");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNotNull(previous.Image, "The collapsed Image still draws the first image, which must stay");
+
+			collapsed.Visibility = Visibility.Visible;
+			await WindowHelper.WaitFor(() => collapsed.ActualWidth is > 0 and < 99, 10000, "Pre-condition: the collapsed Image, shown, draws the second image");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(previous.Image, "Once the last Image draws the second image, the first is released");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Stream_Set_Again_From_Its_Completion_Then_Previous_Frames_Released()
 	{
 		// A preview that sets the next frame as soon as SetSourceAsync completes runs inside the notification of the

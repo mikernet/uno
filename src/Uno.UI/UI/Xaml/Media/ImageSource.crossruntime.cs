@@ -48,6 +48,9 @@ namespace Microsoft.UI.Xaml.Media
 		// to rather than going after the pass, as that Image may come back with them.
 		private List<ICompositionSurface> _leftWithSurfaces;
 
+		// How many times the subscriptions' Shown and Pending refer to each surface, so whether one holds it is O(1).
+		private Dictionary<ICompositionSurface, int> _holdCounts;
+
 		// Changes whenever _imageData is replaced.
 		private int _dataVersion;
 
@@ -131,7 +134,7 @@ namespace Microsoft.UI.Xaml.Media
 				_source = source;
 				_callback = callback;
 				AppliedOnDelivery = appliedOnDelivery;
-				Shown = shown;
+				Set(shown, default);
 			}
 
 			/// <summary>
@@ -154,20 +157,31 @@ namespace Microsoft.UI.Xaml.Media
 			/// </summary>
 			internal bool IsActive => !_isDisposed;
 
-			internal bool Holds(ICompositionSurface surface)
-				=> ReferenceEquals(Shown.CompositionSurface, surface) || ReferenceEquals(Pending.CompositionSurface, surface);
+			// Keeps the source's hold counts in step with Shown and Pending.
+			private void Set(ImageData shown, ImageData pending)
+			{
+				if (!_isDisposed)
+				{
+					_source.CountHold(shown, 1);
+					_source.CountHold(pending, 1);
+					_source.CountHold(Shown, -1);
+					_source.CountHold(Pending, -1);
+				}
+
+				Shown = shown;
+				Pending = pending;
+			}
 
 			internal void Deliver(ImageData data)
 			{
 				// Before the callback, which may change the source and so be given newer data, or throw.
 				if (AppliedOnDelivery)
 				{
-					Shown = data;
-					Pending = default;
+					Set(data, default);
 				}
 				else
 				{
-					Pending = data;
+					Set(Shown, data);
 				}
 
 				_callback(data);
@@ -181,8 +195,7 @@ namespace Microsoft.UI.Xaml.Media
 			{
 				if (!_isDisposed)
 				{
-					Shown = data;
-					Pending = default;
+					Set(data, default);
 					_source.OnApplied();
 				}
 			}
@@ -208,6 +221,8 @@ namespace Microsoft.UI.Xaml.Media
 				(_leftWithSurfaces ??= new()).Add(surface);
 			}
 
+			CountHold(subscription.Shown, -1);
+			CountHold(subscription.Pending, -1);
 			ReleaseReplacedNoLongerShown(delay: null);
 
 			if (_subscriptions.Count == 0)
@@ -217,6 +232,23 @@ namespace Microsoft.UI.Xaml.Media
 		}
 
 		private void OnApplied() => ReleaseReplacedNoLongerShown(TimeSpan.Zero);
+
+		private void CountHold(ImageData data, int change)
+		{
+			if (data.CompositionSurface is { } surface)
+			{
+				var counts = _holdCounts ??= new(ReferenceEqualityComparer.Instance);
+				var count = counts.GetValueOrDefault(surface) + change;
+				if (count > 0)
+				{
+					counts[surface] = count;
+				}
+				else
+				{
+					counts.Remove(surface);
+				}
+			}
+		}
 
 		/// <summary>
 		/// Changes when what this source shows changes (a new UriSource or stream, an invalidation), but not when its
@@ -338,7 +370,7 @@ namespace Microsoft.UI.Xaml.Media
 
 				// A WriteableBitmap draws its new pixels into the same surface.
 				var isCurrent = ReferenceEquals(surface, _imageData.CompositionSurface);
-				if (!isCurrent && _subscriptions.Exists(s => s.Holds(surface)))
+				if (!isCurrent && _holdCounts?.ContainsKey(surface) == true)
 				{
 					continue;
 				}
