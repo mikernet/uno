@@ -218,7 +218,19 @@ internal static class PendingImageReleases
 		else if (!_isCheckQueued)
 		{
 			_isCheckQueued = true;
-			NativeDispatcher.Main.Enqueue(static () => ReleaseDue(atLayoutPassEnd: false));
+			NativeDispatcher.Main.Enqueue(static () =>
+			{
+				// A window that got bounds meanwhile loads what it shows in its next pass, which then runs the check.
+				if (CoreServices.HasRootWithBounds())
+				{
+					_isCheckQueued = false;
+					CoreServices.RequestAdditionalFrame();
+				}
+				else
+				{
+					ReleaseDue(atLayoutPassEnd: false);
+				}
+			});
 		}
 	}
 }
