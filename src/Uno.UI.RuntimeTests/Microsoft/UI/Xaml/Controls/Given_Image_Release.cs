@@ -1149,6 +1149,110 @@ public class Given_Image_Release
 	[TestMethod]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Cached_Open_Handler_Changes_Source_Then_Image_Releases_Replacement_On_Unload()
+	{
+		// Opening a completed cache entry raises BitmapImage.ImageOpened while the Image subscribes. A handler that switches
+		// the Image to an uncached source has the Image subscribe to that one first: it is the subscription the Image must
+		// keep, and let go of when unloaded, so the pixels it owns are released.
+		using var cache = EnableBitmapImageCache();
+		using var limit = ReleaseAfterLayoutPass();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			server.ReleaseResponses();
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			// Completes the cache entry for the server's image.
+			await AddAndWaitForOpened(panel, new Image { Width = 100, Height = 40, Source = new BitmapImage(server.Uri) });
+
+			var cached = new BitmapImage(server.Uri);
+			var uncached = new BitmapImage { CreateOptions = BitmapCreateOptions.IgnoreImageCache, UriSource = new Uri(AssetUri) };
+			var image = new Image { Width = 100, Height = 40, Source = cached };
+			var loadedRaised = false;
+			var switchedWhileSubscribing = false;
+			image.Loaded += (_, _) => loadedRaised = true;
+			cached.ImageOpened += (_, _) =>
+			{
+				if (image.Source == cached)
+				{
+					switchedWhileSubscribing = image.IsLoaded && !loadedRaised;
+					image.Source = uncached;
+				}
+			};
+
+			var opened = TrackOpen(uncached);
+			panel.Children.Add(image);
+			Assert.IsTrue(await opened.WaitAsync(TimeSpan.FromSeconds(10)), "Pre-condition: the uncached source opens");
+			await WindowHelper.WaitForIdle();
+			Assert.IsTrue(switchedWhileSubscribing, "Pre-condition: the cached open raises ImageOpened while the Image subscribes");
+			var surface = GetSurface(uncached);
+
+			panel.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(surface.Image, "Unloaded, the Image lets go of the source it switched to, so its pixels are released");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Cached_Open_Handler_Changes_Brush_Source_Then_Brush_Draws_Replacement()
+	{
+		// The same for a brush: the source its ImageOpened handler switched it to, while it subscribed, is the one it draws.
+		using var cache = EnableBitmapImageCache();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			server.ReleaseResponses();
+			var panel = new StackPanel();
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			// Completes the cache entry for the server's image.
+			await AddAndWaitForOpened(panel, new Image { Width = 100, Height = 40, Source = new BitmapImage(server.Uri) });
+
+			var cached = new BitmapImage(server.Uri);
+			var other = new BitmapImage(new Uri(TallAssetUri));
+			var brush = new ImageBrush();
+			var switched = false;
+			cached.ImageOpened += (_, _) =>
+			{
+				if (brush.ImageSource == cached)
+				{
+					switched = true;
+					brush.ImageSource = other;
+				}
+			};
+
+			var border = new Border { Width = 100, Height = 40, Background = brush };
+			panel.Children.Add(border);
+			await WindowHelper.WaitForLoaded(border);
+
+			var opened = TrackOpen(other);
+			brush.ImageSource = cached;
+			Assert.IsTrue(switched, "Pre-condition: the cached open raises ImageOpened while the brush subscribes");
+			Assert.IsTrue(await opened.WaitAsync(TimeSpan.FromSeconds(10)), "Pre-condition: the other source opens");
+			await WindowHelper.WaitForIdle();
+
+			var compositionBrush = (CompositionSurfaceBrush)brush.GetOrCreateCompositionBrush(border.Visual.Compositor);
+			Assert.AreSame(GetSurface(other), compositionBrush.Surface, "The brush draws the source it was switched to");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Image_Showing_Replaced_Pixels_Leaves_Then_They_Wait_Like_Undisplayed_Ones()
 	{
 		// While the replacement downloads, a second Image subscribes and shows nothing yet. The first Image, the only one

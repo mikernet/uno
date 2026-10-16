@@ -13,6 +13,9 @@ namespace Microsoft.UI.Xaml.Controls
 	partial class Image : FrameworkElement
 	{
 		private ImageSource.Subscription _subscription;
+
+		// Changes whenever _subscription is set or released, so a Subscribe that the app superseded meanwhile is noticed.
+		private int _subscriptionVersion;
 		private Size _lastMeasuredSize;
 		private ICompositionSurface _currentSurface;
 		private CompositionSurfaceBrush _surfaceBrush;
@@ -58,7 +61,9 @@ namespace Microsoft.UI.Xaml.Controls
 		{
 			// Back in the tree, the sprite still draws _currentSurface (see OnUnloaded). What it is given is drawn once
 			// measured, and acknowledged then (TryProcessPendingSource).
-			_subscription = source.Subscribe(
+			var version = ++_subscriptionVersion;
+			var shown = _currentSurface;
+			var subscription = source.Subscribe(
 				img =>
 				{
 					_pendingImageData = img;
@@ -66,12 +71,28 @@ namespace Microsoft.UI.Xaml.Controls
 
 					InvalidateMeasure();
 				},
-				shown: _currentSurface,
+				shown: shown,
 				appliedOnDelivery: false);
+
+			if (version == _subscriptionVersion)
+			{
+				_subscription = subscription;
+				return;
+			}
+
+			// Subscribing ran app code (opening a completed cache entry raises BitmapImage.ImageOpened at once) that changed
+			// the source or unloaded this Image, which by now has the subscription it needs, if any.
+			if (!ReferenceEquals(_currentSurface, shown))
+			{
+				subscription.Applied(ImageData.Empty);
+			}
+
+			subscription.Dispose();
 		}
 
 		private void ReleaseSubscription()
 		{
+			_subscriptionVersion++;
 			_subscription?.Dispose();
 			_subscription = null;
 		}
