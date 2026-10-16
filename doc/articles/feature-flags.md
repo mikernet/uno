@@ -29,6 +29,14 @@ For details, see [Vulkan Rendering Backend](xref:Uno.Skia.Vulkan).
 
 Set `Uno.UI.FeatureConfiguration.Rendering.SkipVisualTreePainting` to `true` to skip painting of the visual tree entirely, producing frames with no visual output. Frame scheduling, rendering events, composition animations and `RenderTargetBitmap` keep working as usual. This is intended for scenarios where the visual output is of no interest (e.g. automated tests) to save CPU/GPU. Default: `false`.
 
+## Images (Skia)
+
+### Memory kept for undisplayed images
+
+A decoded image that nothing displays anymore (its `Image` was unloaded or given another source) keeps its pixels for 1 second, as on WinUI, so that it shows them at once if it comes back. `Uno.UI.FeatureConfiguration.Image.MaxUndisplayedImageBytes` bounds the memory these images hold: past it, the oldest are released first at the end of the next layout pass, and with `0` every one of them is. An image counts 4 bytes per pixel of its decoded frames and of the texture drawn from it; images shared through the bitmap cache (`EnableBitmapImageCache`) are not counted. Defaults: 128 MB on desktop, 64 MB on Android, iOS and tvOS, 32 MB on WebAssembly.
+
+Uno decodes an image at its full size unless `DecodePixelWidth` or `DecodePixelHeight` is set, where WinUI decodes it at its rendered size by default, so apps that page quickly through large images may want a lower limit or a decode size.
+
 ## ComboBox
 
 ### Default preferred placement

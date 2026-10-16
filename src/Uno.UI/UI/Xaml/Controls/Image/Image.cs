@@ -30,11 +30,12 @@ namespace Microsoft.UI.Xaml.Controls
 		{
 			// We clear the old image first. We do NOT wait for the new image to load
 			// for it to replace the old one. This is what happens on WinUI.
-			_sourceDisposable.Disposable = null;
-			_lastMeasuredSize = default;
+			// The sprite lets go of the surface before the subscription can release it.
 			_imageSprite.Brush = null;
 			_currentSurface = null;
 			_pendingImageData = null;
+			_sourceDisposable.Disposable = null;
+			_lastMeasuredSize = default;
 			InvalidateMeasure();
 
 			// SVG flows through the same neutral path as any source: its ISvgRenderer produces a live composition
@@ -176,10 +177,11 @@ namespace Microsoft.UI.Xaml.Controls
 		{
 			base.OnLoaded();
 
-			// The subscription was released on unload: subscribe again, which decodes the source again.
+			// The subscription was released on unload: subscribe again. A source that kept its data (shared through the
+			// cache, or not yet released) delivers it at once; one that released it decodes it again.
 			if (_sourceDisposable.Disposable is null && Source is { } source)
 			{
-				OnSourceChanged(source, forceReload: false);
+				InitializeImageSource(source);
 			}
 		}
 
@@ -188,9 +190,9 @@ namespace Microsoft.UI.Xaml.Controls
 			base.OnUnloaded();
 
 			// Nothing displays this image while it is unloaded, so its subscription is released, which lets the source
-			// release its decoded pixels; the sprite must not keep pointing at them.
-			_imageSprite.Brush = null;
-			_currentSurface = null;
+			// release its decoded pixels once they have waited (PendingImageReleases). The sprite keeps its brush: it is not
+			// drawn off the tree, an Image back in time shows its pixels even in a frame recorded before Loaded, and a
+			// released surface draws nothing (the release also drops the sprite's cached recording).
 			_pendingImageData = null;
 			_sourceDisposable.Disposable = null;
 		}

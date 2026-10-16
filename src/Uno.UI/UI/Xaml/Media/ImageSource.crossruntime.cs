@@ -34,6 +34,12 @@ namespace Microsoft.UI.Xaml.Media
 		private readonly SerialDisposable _opening = new SerialDisposable();
 		private readonly List<Action<ImageData>> _subscriptions = new List<Action<ImageData>>();
 
+		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
+		private bool _isOpening;
+
+		// The wait of what this source decoded while nothing subscribes to it.
+		private PendingImageReleases.Entry _pendingRelease;
+
 		protected ImageSource()
 		{
 
@@ -65,12 +71,13 @@ namespace Microsoft.UI.Xaml.Media
 		internal IDisposable Subscribe(Action<ImageData> onSourceOpened)
 		{
 			_subscriptions.Add(onSourceOpened);
+			CancelPendingRelease();
 
 			if (_imageData.HasData)
 			{
 				onSourceOpened(_imageData);
 			}
-			else if (_subscriptions.Count == 1)
+			else if (_subscriptions.Count == 1 && !_isOpening)
 			{
 				Open();
 			}
@@ -79,11 +86,9 @@ namespace Microsoft.UI.Xaml.Media
 			{
 				_subscriptions.Remove(onSourceOpened);
 
-				// Nothing displays the image anymore: its decoded pixels are released now, as WinUI drops a decoded
-				// surface once its last user lets go, and decoded again if something subscribes later.
 				if (_subscriptions.Count == 0)
 				{
-					ReleaseImageData();
+					ScheduleReleaseUnused();
 				}
 			});
 		}
@@ -94,14 +99,64 @@ namespace Microsoft.UI.Xaml.Media
 		internal static int ReleasedSurfacesForTesting;
 
 		/// <summary>
-		/// Cancels an open in flight and releases the decoded data this source owns.
+		/// Releases what this source decoded for its subscribers once it has waited for one to come back (see
+		/// <see cref="PendingImageReleases"/>), so an element that leaves the tree and enters it again meanwhile
+		/// (re-parenting, re-templating, container recycling) keeps its pixels.
+		/// </summary>
+		private void ScheduleReleaseUnused()
+		{
+			// An SvgImageSource opens without subscribers and keeps its parsed vector document until its source changes.
+			// Data shared through the bitmap cache stays: the source never releases it.
+			if (this is not SvgImageSource
+				&& _pendingRelease is null
+				&& (IsReleasable(_imageData) || _isOpening))
+			{
+				_pendingRelease = PendingImageReleases.Add(GetOwnedByteCount(), ReleaseUnused);
+			}
+		}
+
+		private void CancelPendingRelease()
+		{
+			if (_pendingRelease is { } pending)
+			{
+				PendingImageReleases.Remove(pending);
+				_pendingRelease = null;
+			}
+		}
+
+		private long GetOwnedByteCount() => GetByteCount(_imageData);
+
+		private static long GetByteCount(ImageData data)
+			=> IsReleasable(data) ? ((CompositionImageSurface)data.CompositionSurface!).DecodedByteCount : 0;
+
+		private void ReleaseUnused()
+		{
+			_pendingRelease = null;
+
+			// An open nothing waits for is stopped, which cancels an uncached download.
+			_opening.Disposable = null;
+			_isOpening = false;
+
+			if (IsReleasable(_imageData))
+			{
+				ReleaseSurface(_imageData);
+				_imageData = ImageData.Empty;
+			}
+		}
+
+		/// <summary>
+		/// Cancels an open in flight and releases the decoded data this source owns, for a change of the source.
 		/// </summary>
 		private void ReleaseImageData()
 		{
 			_opening.Disposable = null;
+			_isOpening = false;
+			CancelPendingRelease();
 			ReleaseSurface(_imageData);
 			_imageData = ImageData.Empty;
 		}
+
+		private static bool IsReleasable(ImageData data) => !data.IsShared && data.CompositionSurface is CompositionImageSurface;
 
 		/// <summary>
 		/// Releases the decoded frames of an image surface that nothing will display, unless the data is shared through
@@ -109,9 +164,9 @@ namespace Microsoft.UI.Xaml.Media
 		/// </summary>
 		private protected static void ReleaseSurface(ImageData data)
 		{
-			if (!data.IsShared && data.CompositionSurface is CompositionImageSurface surface)
+			if (IsReleasable(data))
 			{
-				surface.ReleaseFrames();
+				((CompositionImageSurface)data.CompositionSurface!).ReleaseFrames();
 				Interlocked.Increment(ref ReleasedSurfacesForTesting);
 			}
 		}
@@ -136,6 +191,7 @@ namespace Microsoft.UI.Xaml.Media
 			var cts = new CancellationTokenSource();
 			var ct = cts.Token;
 			_opening.Disposable = Disposable.Create(cts.Cancel);
+			_isOpening = false;
 			try
 			{
 				if (TryOpenSourceSync(null, null, out var img))
@@ -144,13 +200,14 @@ namespace Microsoft.UI.Xaml.Media
 				}
 				else if (TryOpenSourceAsync(ct, null, null, out var asyncImg))
 				{
-					DispatcherQueue.TryEnqueue(async () =>
+					_isOpening = DispatcherQueue.TryEnqueue(async () =>
 					{
 						try
 						{
 							var data = await asyncImg;
 							if (!ct.IsCancellationRequested)
 							{
+								_isOpening = false;
 								OnOpened(data);
 							}
 							else
@@ -165,6 +222,11 @@ namespace Microsoft.UI.Xaml.Media
 						}
 						catch (Exception error)
 						{
+							if (!ct.IsCancellationRequested)
+							{
+								_isOpening = false;
+							}
+
 							OnOpened(ImageData.FromError(error));
 						}
 					});
@@ -176,6 +238,7 @@ namespace Microsoft.UI.Xaml.Media
 			}
 			catch (Exception error)
 			{
+				_isOpening = false;
 				OnOpened(ImageData.FromError(error));
 			}
 		}
@@ -193,6 +256,12 @@ namespace Microsoft.UI.Xaml.Media
 			foreach (var listener in listeners)
 			{
 				listener(data);
+			}
+
+			// A decode that completed while nothing subscribes waits with what this source had.
+			if (_pendingRelease is { } pending)
+			{
+				PendingImageReleases.Resize(pending, GetOwnedByteCount());
 			}
 		}
 	}
