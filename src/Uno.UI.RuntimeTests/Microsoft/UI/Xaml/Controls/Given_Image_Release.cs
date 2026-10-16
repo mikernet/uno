@@ -1149,6 +1149,51 @@ public class Given_Image_Release
 	[TestMethod]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Rendered_Brush_ImageSource_Replaced_Then_Previous_Image_Not_Drawn()
+	{
+		// A drawn ImageBrush given another bitmap, still downloading, draws nothing until it arrives, as on WinUI, where a
+		// brush draws its source's surface. It must not keep drawing the first image, released once nothing subscribes to it.
+		using var _ = DisableBitmapImageCache();
+		using var limit = ReleaseAfterLayoutPass();
+
+		try
+		{
+			using var server = await GatedImageServer.StartAsync();
+			var brush = new ImageBrush { ImageSource = new BitmapImage(new Uri(AssetUri)) };
+			var opened = 0;
+			brush.ImageOpened += (_, _) => opened++;
+
+			var border = new Border { Width = 100, Height = 40, Background = brush };
+			await UITestHelper.Load(border);
+			await WindowHelper.WaitFor(() => opened == 1, 10000, "Pre-condition: the brush gets the first image");
+			await WindowHelper.WaitForIdle();
+
+			var compositionBrush = (CompositionSurfaceBrush)brush.GetOrCreateCompositionBrush(border.Visual.Compositor);
+			var previous = compositionBrush.Surface as CompositionImageSurface;
+			Assert.IsNotNull(previous?.Image, "Pre-condition: the brush draws the first image");
+
+			brush.ImageSource = new BitmapImage(server.Uri);
+			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the second image is downloading");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsNull(compositionBrush.Surface, "Until the second image arrives, the brush draws nothing, not the first image");
+			Assert.IsNull(previous.Image, "Nothing subscribes to the first image anymore, so it is released");
+
+			server.ReleaseResponses();
+			await WindowHelper.WaitFor(() => opened == 2, 10000, "Pre-condition: the brush gets the second image");
+			await WindowHelper.WaitForIdle();
+
+			Assert.IsTrue(compositionBrush.Surface is CompositionImageSurface { Image: not null }, "The brush draws the second image");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Cached_Open_Handler_Changes_Source_Then_Image_Releases_Replacement_On_Unload()
 	{
 		// Opening a completed cache entry raises BitmapImage.ImageOpened while the Image subscribes. A handler that switches

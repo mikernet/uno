@@ -1,4 +1,5 @@
-﻿using Uno.Disposables;
+﻿using Microsoft.UI.Composition;
+using Uno.Disposables;
 using Uno.UI.Xaml.Media;
 
 namespace Microsoft.UI.Xaml.Media
@@ -14,7 +15,13 @@ namespace Microsoft.UI.Xaml.Media
 
 		partial void OnSourceChangedPartial(ImageSource newValue, ImageSource oldValue)
 		{
+			// The new source draws nothing until it opens, as on WinUI, where a brush draws its source's surface. The
+			// composition brush lets go of the old image before the subscription can release it.
 			ImageDataCache = default;
+			if (_compositionBrush is CompositionSurfaceBrush surfaceBrush)
+			{
+				surfaceBrush.Surface = null;
+			}
 
 			// A UriSource change needs no new subscription: the source opens the new URI for this one, and the brush draws what
 			// it has until then, as an Image does (and as WinUI keeps the surface while it switches URIs).
