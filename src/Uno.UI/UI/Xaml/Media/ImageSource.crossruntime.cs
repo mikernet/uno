@@ -40,6 +40,9 @@ namespace Microsoft.UI.Xaml.Media
 		// What the subscribers still show while the source opens what replaced it.
 		private ImageData _outgoingImageData;
 
+		// Changes whenever _imageData is replaced.
+		private int _dataVersion;
+
 		// The wait of what this source decoded while nothing subscribes to it.
 		private PendingImageReleases.Entry _pendingRelease;
 
@@ -152,6 +155,7 @@ namespace Microsoft.UI.Xaml.Media
 			{
 				ReleaseSurface(_imageData);
 				_imageData = ImageData.Empty;
+				_dataVersion++;
 			}
 		}
 
@@ -179,6 +183,7 @@ namespace Microsoft.UI.Xaml.Media
 			}
 
 			_imageData = ImageData.Empty;
+			_dataVersion++;
 		}
 
 		private void ReleaseOutgoing()
@@ -279,6 +284,7 @@ namespace Microsoft.UI.Xaml.Media
 		private void OnOpened(ImageData data)
 		{
 			_imageData = data; // We should also cache the targetWidth and targetHeight
+			var version = ++_dataVersion;
 
 			// What the subscribers showed until now goes once they show this.
 			var outgoing = _outgoingImageData;
@@ -289,10 +295,19 @@ namespace Microsoft.UI.Xaml.Media
 				this.Log().Debug($"Image {this} opened with {data}");
 			}
 
-			var listeners = _subscriptions.ToList();
-			foreach (var listener in listeners)
+			// A listener can unsubscribe others, or change the source and so release this data: only listeners still
+			// subscribed get it, and only while it is still the source's.
+			foreach (var listener in _subscriptions.ToArray())
 			{
-				listener(data);
+				if (_dataVersion != version)
+				{
+					break;
+				}
+
+				if (_subscriptions.Contains(listener))
+				{
+					listener(data);
+				}
 			}
 
 			// A WriteableBitmap draws its new pixels into the same surface. Others go after the layout pass that applies
