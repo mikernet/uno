@@ -1202,8 +1202,8 @@ public class Given_Image_Release
 	public async Task When_Image_Returns_After_Source_Cleared_Then_Replaced_Pixels_Not_Kept()
 	{
 		// An Image that left while the replacement downloaded comes back, still drawing the previous image, after the source
-		// was cleared: nothing will replace that image for it, so it must not keep it. The image keeps waiting like any
-		// undisplayed one, so lowering the limit to 0 releases it after the next pass.
+		// was cleared: nothing will replace that image for it, so it must not keep it, nor show it. The image keeps waiting
+		// like any undisplayed one, so lowering the limit to 0 releases it after the next pass.
 		using var _ = DisableBitmapImageCache();
 		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
 		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
@@ -1211,20 +1211,20 @@ public class Given_Image_Release
 		try
 		{
 			using var server = await GatedImageServer.StartAsync();
-			var panel = new StackPanel();
+			var panel = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
 			await UITestHelper.Load(panel, x => x.IsLoaded);
 
 			var bitmap = new BitmapImage(new Uri(AssetUri));
-			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			var image = new Image { Source = bitmap };
 			await AddAndWaitForOpened(panel, image);
 			await WindowHelper.WaitForIdle();
 			var previous = GetSurface(bitmap);
 
 			bitmap.UriSource = server.Uri;
 			await WindowHelper.WaitFor(() => server.RequestCount >= 1, 5000, "Pre-condition: the replacement is downloading");
-			var other = new Image { Width = 100, Height = 40, Source = bitmap };
+			var other = new Image { Source = bitmap };
 			panel.Children.Add(other);
-			await WindowHelper.WaitForLoaded(other);
+			await UITestHelper.WaitForLoaded(other, x => x.IsLoaded);
 			await WindowHelper.WaitForIdle();
 
 			panel.Children.Remove(image);
@@ -1233,15 +1233,66 @@ public class Given_Image_Release
 			await WindowHelper.WaitForIdle();
 
 			panel.Children.Add(image);
-			await WindowHelper.WaitForLoaded(image);
+			await UITestHelper.WaitForLoaded(image, x => x.IsLoaded);
 			await WindowHelper.WaitForIdle();
 			Assert.IsNotNull(previous.Image, "Pre-condition: the previous image waits within the delay");
+			Assert.AreEqual(0, image.ActualWidth, "The Image back after the source was cleared must not show the previous image");
 
 			FeatureConfiguration.Image.MaxUndisplayedImageBytes = 0;
 			panel.Children.Add(new Border { Width = 10, Height = 10 });
 			await WindowHelper.WaitForIdle();
 
 			Assert.IsNull(previous.Image, "The Image back after the source was cleared must not keep the previous image");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
+	[DataRow(false, DisplayName = "Cleared")]
+	[DataRow(true, DisplayName = "Failed")]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_Cached_Image_Returns_After_Source_Settled_Then_Shows_Nothing(bool fails)
+	{
+		// Two Images share a cached bitmap, and the source is cleared or fails while one of them is away. The cache keeps
+		// the shared pixels alive, so the Image that comes back must stop drawing them, as the other one did. It raises
+		// nothing: as on WinUI, an element that attaches to a source that already failed is not told about it.
+		using var cache = EnableBitmapImageCache();
+
+		try
+		{
+			var panel = new StackPanel { Orientation = Orientation.Horizontal, Height = 40 };
+			await UITestHelper.Load(panel, x => x.IsLoaded);
+
+			var bitmap = new BitmapImage(new Uri(AssetUri));
+			var image = new Image { Source = bitmap };
+			var other = new Image { Source = bitmap };
+			await AddAndWaitForOpened(panel, image);
+			await AddAndWaitForOpened(panel, other);
+			await WindowHelper.WaitForIdle();
+
+			panel.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+
+			var otherFailed = 0;
+			other.ImageFailed += (_, _) => otherFailed++;
+			bitmap.UriSource = fails ? new Uri("ms-appx:///Assets/does-not-exist.png") : null;
+			await WindowHelper.WaitFor(() => fails ? otherFailed == 1 : other.ActualWidth == 0, 10000, "Pre-condition: the other Image has the settled source");
+			await WindowHelper.WaitForIdle();
+			Assert.AreEqual(0, other.ActualWidth, "Pre-condition: the other Image shows nothing");
+
+			var raised = 0;
+			image.ImageOpened += (_, _) => raised++;
+			image.ImageFailed += (_, _) => raised++;
+			panel.Children.Add(image);
+			await UITestHelper.WaitForLoaded(image, x => x.IsLoaded);
+			await WindowHelper.WaitForIdle();
+
+			Assert.AreEqual(0, image.ActualWidth, "The Image back in the tree must not show the image its source no longer has");
+			Assert.AreEqual(0, raised, "The Image back in the tree raises nothing for the settled source");
+			Assert.AreEqual(fails ? 1 : 0, otherFailed, "The other Image raised ImageFailed once, when the source failed");
 		}
 		finally
 		{

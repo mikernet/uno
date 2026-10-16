@@ -79,7 +79,8 @@ namespace Microsoft.UI.Xaml.Media
 		/// </param>
 		/// <param name="shown">
 		/// What the subscriber still draws from an earlier subscription to this source (an Image back in the tree). While the
-		/// source has data or is opening, that is kept until the subscriber is given what replaced it.
+		/// source has data or is opening, that is kept until the subscriber is given what replaced it; once the source failed
+		/// or was cleared, the subscriber is given an empty image instead, so it stops drawing it.
 		/// </param>
 		internal IDisposable Subscribe(Action<ImageData> onSourceOpened, ICompositionSurface shown = null)
 		{
@@ -97,6 +98,13 @@ namespace Microsoft.UI.Xaml.Media
 			else if (_subscriptions.Count == 1 && !_isOpening)
 			{
 				Open();
+			}
+			else if (shown is not null && !_isOpening)
+			{
+				// The source failed or was cleared while the subscriber was away: it must stop drawing what it had, which the
+				// cache may keep alive. It gets an empty image, not the error: as on WinUI, attaching to a source that already
+				// failed raises nothing.
+				subscription.Deliver(ImageData.Empty);
 			}
 
 			return Disposable.Create(() =>
