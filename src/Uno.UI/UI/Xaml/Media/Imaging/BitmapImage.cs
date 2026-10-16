@@ -146,13 +146,47 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 		// the source is set — imagesource.cpp).
 		private int? _imageOpenedVersion;
 
-		internal void RaiseImageOpened()
+		private void RaiseImageOpened(int version)
 		{
-			if (_imageOpenedVersion != SourceVersion)
+			if (_imageOpenedVersion != version)
 			{
-				_imageOpenedVersion = SourceVersion;
+				_imageOpenedVersion = version;
 				ImageOpened?.Invoke(this, new RoutedEventArgs(this));
 			}
+		}
+
+		// Takes the pixel size of an open's result and raises its event. Setting the size runs property-changed handlers,
+		// which may change the source: that supersedes the open, which then raises nothing and releases what it owns.
+		private ImageData Publish(ImageData imageData, int version, CancellationToken ct)
+		{
+			if (imageData.Kind == ImageDataKind.Error)
+			{
+				PixelWidth = 0;
+				PixelHeight = 0;
+			}
+			else if (imageData.Kind == ImageDataKind.CompositionSurface)
+			{
+				var image = ((global::Microsoft.UI.Composition.CompositionImageSurface)imageData.CompositionSurface!).Image;
+				PixelWidth = image.PixelWidth;
+				PixelHeight = image.PixelHeight;
+			}
+
+			if (ct.IsCancellationRequested)
+			{
+				ReleaseSurface(imageData);
+				throw new OperationCanceledException(ct);
+			}
+
+			if (imageData.Kind == ImageDataKind.Error)
+			{
+				RaiseImageFailed(imageData.Error);
+			}
+			else if (imageData.Kind == ImageDataKind.CompositionSurface)
+			{
+				RaiseImageOpened(version);
+			}
+
+			return imageData;
 		}
 
 		private readonly record struct BitmapImageCacheKey(Uri Uri, int? DecodeWidth, int? DecodeHeight);
@@ -207,6 +241,8 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 
 		private async Task<ImageData> TryOpenSourceAsync(CancellationToken ct)
 		{
+			var version = SourceVersion;
+
 			try
 			{
 				var (decodeWidth, decodeHeight) = GetDecodePixelSize();
@@ -256,21 +292,7 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 							throw new OperationCanceledException(ct);
 						}
 
-						if (imageData.Kind == ImageDataKind.Error)
-						{
-							PixelWidth = 0;
-							PixelHeight = 0;
-							RaiseImageFailed(imageData.Error);
-						}
-						else if (imageData.Kind == ImageDataKind.CompositionSurface)
-						{
-							var image = ((global::Microsoft.UI.Composition.CompositionImageSurface)imageData.CompositionSurface!).Image;
-							PixelWidth = image.PixelWidth;
-							PixelHeight = image.PixelHeight;
-							RaiseImageOpened();
-						}
-
-						return imageData;
+						return Publish(imageData, version, ct);
 					}
 				}
 				else
@@ -367,21 +389,7 @@ namespace Microsoft.UI.Xaml.Media.Imaging
 						throw;
 					}
 
-					if (imageData.Kind == ImageDataKind.Error)
-					{
-						PixelWidth = 0;
-						PixelHeight = 0;
-						RaiseImageFailed(imageData.Error);
-					}
-					else if (imageData.Kind == ImageDataKind.CompositionSurface)
-					{
-						var image = ((global::Microsoft.UI.Composition.CompositionImageSurface)imageData.CompositionSurface!).Image;
-						PixelWidth = image.PixelWidth;
-						PixelHeight = image.PixelHeight;
-						RaiseImageOpened();
-					}
-
-					return imageData;
+					return Publish(imageData, version, ct);
 				}
 			}
 			catch (OperationCanceledException) when (ct.IsCancellationRequested)

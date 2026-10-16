@@ -960,6 +960,47 @@ public class Given_Image_Release
 	}
 
 	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public async Task When_PixelWidth_Handler_Changes_Source_Then_Replacement_Raises_ImageOpened()
+	{
+		// Taking the pixel size of a decode runs property-changed handlers; one that sets a new UriSource supersedes the open,
+		// which must then raise nothing (nor mark the new source as opened) and release its decode.
+		using var _ = DisableBitmapImageCache();
+		using var decoder = TrackingDecoder.Install();
+
+		try
+		{
+			var bitmap = new BitmapImage();
+			var widths = new List<int>();
+			bitmap.ImageOpened += (_, _) => widths.Add(bitmap.PixelWidth);
+
+			var armed = true;
+			bitmap.RegisterPropertyChangedCallback(BitmapSource.PixelWidthProperty, (_, _) =>
+			{
+				if (armed && bitmap.PixelWidth == 500)
+				{
+					armed = false;
+					bitmap.UriSource = new Uri(SquareAssetUri);
+				}
+			});
+
+			bitmap.UriSource = new Uri(AssetUri);
+			var image = new Image { Width = 100, Height = 40, Source = bitmap };
+			await UITestHelper.Load(image);
+
+			await WindowHelper.WaitFor(() => !armed && bitmap.IsOpened && bitmap.PixelWidth == 100, 10000, "Pre-condition: the replacement is decoded");
+			await WindowHelper.WaitForIdle();
+
+			CollectionAssert.AreEqual(new[] { 100 }, widths, "Only the replacement raises ImageOpened");
+			Assert.IsTrue(decoder.Decoded(500, 200).All(d => d.IsReleased), "The superseded decode is released");
+		}
+		finally
+		{
+			WindowHelper.WindowContent = null;
+		}
+	}
+
+	[TestMethod]
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Source_Changed_By_Last_Subscriber_Then_Previous_Pixels_Released()
