@@ -149,6 +149,11 @@ namespace Microsoft.UI.Xaml.Media
 			/// </summary>
 			internal ImageData Pending { get; private set; }
 
+			/// <summary>
+			/// Whether the subscription was not disposed, which also takes it out of the source's subscriptions.
+			/// </summary>
+			internal bool IsActive => !_isDisposed;
+
 			internal bool Holds(ICompositionSurface surface)
 				=> ReferenceEquals(Shown.CompositionSurface, surface) || ReferenceEquals(Pending.CompositionSurface, surface);
 
@@ -540,7 +545,7 @@ namespace Microsoft.UI.Xaml.Media
 					break;
 				}
 
-				if (_subscriptions.Contains(subscription))
+				if (subscription.IsActive)
 				{
 					subscription.Deliver(data);
 				}
