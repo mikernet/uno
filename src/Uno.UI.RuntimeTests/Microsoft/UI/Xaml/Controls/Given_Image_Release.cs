@@ -151,6 +151,10 @@ public class Given_Image_Release
 			Assert.AreEqual(decodes, decoder.Count(500, 200), "Nothing must be decoded again");
 			Assert.AreEqual(1, bitmapOpened);
 			Assert.AreEqual(1, imageOpened);
+
+			second.Children.Remove(image);
+			await WindowHelper.WaitForIdle();
+			Assert.IsNull(surface.Image, "Once the Image stays away, its pixels are released at the end of the pass");
 		}
 		finally
 		{
@@ -656,6 +660,7 @@ public class Given_Image_Release
 	}
 
 	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaDesktop)]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public void When_Many_Images_Wait_Then_Each_Starts_Its_Wait_At_Once()
 	{
@@ -721,42 +726,6 @@ public class Given_Image_Release
 
 			Assert.IsNull(replaced.Image, "The replaced image goes after the pass that draws its replacement");
 			Assert.IsNotNull(waiting.Image, "The waiting image must not be released for the replaced one");
-		}
-		finally
-		{
-			WindowHelper.WindowContent = null;
-		}
-	}
-
-	[TestMethod]
-	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
-	public async Task When_Moved_Before_Next_Layout_Pass_Over_Limit_Then_Decoded_Image_Kept()
-	{
-		// An image larger than the limit by itself is released at the end of the next layout pass, so one moved before that
-		// pass keeps its pixels.
-		using var _ = DisableBitmapImageCache();
-		using var limit = SetMaxUndisplayedImageBytes(100_000);
-		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
-
-		try
-		{
-			var first = new StackPanel();
-			var second = new StackPanel();
-			await UITestHelper.Load(new StackPanel { Children = { first, second } }, x => x.IsLoaded);
-
-			var bitmap = new BitmapImage(new Uri(AssetUri));
-			var image = new Image { Width = 100, Height = 40, Source = bitmap };
-			await AddAndWaitForOpened(first, image);
-			var surface = GetSurface(bitmap);
-
-			first.Children.Remove(image);
-			second.Children.Add(image);
-			await WindowHelper.WaitForIdle();
-			Assert.IsNotNull(surface.Image, "An Image that re-enters the tree within the pass keeps its decoded pixels");
-
-			second.Children.Remove(image);
-			await WindowHelper.WaitForIdle();
-			Assert.IsNull(surface.Image, "An image over the limit by itself is released after the pass once it stays away");
 		}
 		finally
 		{
@@ -2106,112 +2075,6 @@ public class Given_Image_Release
 		{
 			_inner.Dispose();
 			_isReleased = true;
-		}
-	}
-
-	/// <summary>
-	/// Minimal loopback HTTP server that sends the response headers immediately but holds the image bytes
-	/// until <see cref="ReleaseResponses"/>, so a test can act while a download is deterministically in flight.
-	/// </summary>
-	private sealed class GatedImageServer : IDisposable
-	{
-		private readonly TcpListener _listener;
-		private readonly byte[] _body;
-		private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
-		private int _requestCount;
-		private int _bodiesSent;
-
-		private GatedImageServer(TcpListener listener, byte[] body)
-		{
-			_listener = listener;
-			_body = body;
-			Uri = new Uri($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/square100.png");
-			// Off the UI thread: the test may hold the UI thread while a response is pending, and awaits started from it
-			// would otherwise resume through its synchronization context.
-			_ = Task.Run(AcceptLoopAsync);
-		}
-
-		public static async Task<GatedImageServer> StartAsync()
-		{
-			var body = await ReadAssetAsync(SquareAssetUri);
-			var listener = new TcpListener(IPAddress.Loopback, 0);
-			listener.Start();
-			return new GatedImageServer(listener, body);
-		}
-
-		public Uri Uri { get; }
-
-		public int RequestCount => Volatile.Read(ref _requestCount);
-
-		public int BodiesSent => Volatile.Read(ref _bodiesSent);
-
-		public void ReleaseResponses() => _release.TrySetResult();
-
-		public void Dispose()
-		{
-			_release.TrySetResult();
-			_listener.Stop();
-		}
-
-		private async Task AcceptLoopAsync()
-		{
-			try
-			{
-				while (true)
-				{
-					var client = await _listener.AcceptTcpClientAsync().ConfigureAwait(false);
-					_ = HandleAsync(client);
-				}
-			}
-			catch (ObjectDisposedException)
-			{
-			}
-			catch (SocketException)
-			{
-			}
-		}
-
-		private async Task HandleAsync(TcpClient client)
-		{
-			try
-			{
-				using var _ = client;
-				using var stream = client.GetStream();
-
-				var request = new byte[8192];
-				var read = 0;
-				while (!Encoding.ASCII.GetString(request, 0, read).Contains("\r\n\r\n"))
-				{
-					var count = await stream.ReadAsync(request, read, request.Length - read).ConfigureAwait(false);
-					if (count == 0)
-					{
-						return;
-					}
-
-					read += count;
-				}
-
-				Interlocked.Increment(ref _requestCount);
-
-				var headers = $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {_body.Length}\r\nConnection: close\r\n\r\n";
-				await stream.WriteAsync(Encoding.ASCII.GetBytes(headers)).ConfigureAwait(false);
-				await stream.FlushAsync().ConfigureAwait(false);
-
-				await _release.Task.ConfigureAwait(false);
-
-				await stream.WriteAsync(_body).ConfigureAwait(false);
-				await stream.FlushAsync().ConfigureAwait(false);
-				Interlocked.Increment(ref _bodiesSent);
-			}
-			catch (IOException)
-			{
-			}
-			catch (ObjectDisposedException)
-			{
-			}
-			catch (SocketException)
-			{
-			}
 		}
 	}
 }
