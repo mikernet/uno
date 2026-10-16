@@ -23,11 +23,28 @@ internal static class PendingImageReleases
 	/// frames to reload (MUX Reference: corep.h, CCoreServices::TrimMemoryOnSurfaceWrappers in xcpcore.cpp). Tests override
 	/// it, as WinUI's do with m_testOverrideImageSurfaceWrapperReleaseDelay.
 	/// </summary>
-	internal static TimeSpan ReleaseDelay { get; set; } = TimeSpan.FromMilliseconds(1000);
+	internal static TimeSpan ReleaseDelay
+	{
+		get => _releaseDelay;
+		set
+		{
+			_releaseDelay = value;
+
+			// The waits under way end by the new delay, so when the first one ends is no longer known.
+			_earliestDueAt = long.MinValue;
+			StartTimer();
+		}
+	}
+
+	private static TimeSpan _releaseDelay = TimeSpan.FromMilliseconds(1000);
 
 	// In the order the images were let go, so the oldest is released first.
 	private static readonly LinkedList<Entry> _entries = new();
 	private static long _pendingBytes;
+
+	// No wait ends before this timestamp. After a removal it may be earlier than the first end, which only costs a check
+	// that finds nothing due; it spares a scan of the list on each addition and on each layout pass with nothing due.
+	private static long _earliestDueAt = long.MaxValue;
 	private static int _layoutPass;
 	private static global::Microsoft.UI.Dispatching.DispatcherQueueTimer? _timer;
 	private static long _timerDueAt;
@@ -69,6 +86,7 @@ internal static class PendingImageReleases
 		var entry = new Entry(bytes, delay, release);
 		entry.Node = _entries.AddLast(entry);
 		_pendingBytes += bytes;
+		_earliestDueAt = Math.Min(_earliestDueAt, GetDueAt(entry));
 		OnChanged(entry);
 		return entry;
 	}
@@ -83,6 +101,11 @@ internal static class PendingImageReleases
 			_entries.Remove(node);
 			entry.Node = null;
 			_pendingBytes -= entry.Bytes;
+
+			if (_entries.Count == 0)
+			{
+				_earliestDueAt = long.MaxValue;
+			}
 		}
 	}
 
@@ -103,11 +126,24 @@ internal static class PendingImageReleases
 
 	internal static void OnLayoutPassCompleted()
 	{
-		if (_entries.Count > 0)
+		if (_entries.Count == 0)
+		{
+			return;
+		}
+
+		if (_pendingBytes > FeatureConfiguration.Image.MaxUndisplayedImageBytes || Stopwatch.GetTimestamp() >= _earliestDueAt)
 		{
 			ReleaseDue(atLayoutPassEnd: true);
 		}
+		else
+		{
+			// Nothing is due yet, e.g. after a timer that fired a little early: the wait goes on.
+			StartTimer();
+		}
 	}
+
+	private static long GetDueAt(Entry entry)
+		=> entry.Since + (long)((entry.Delay ?? ReleaseDelay).TotalSeconds * Stopwatch.Frequency);
 
 	private static void OnChanged(Entry entry)
 	{
@@ -132,28 +168,42 @@ internal static class PendingImageReleases
 		var now = Stopwatch.GetTimestamp();
 		var waitsForNextPass = false;
 
+		_earliestDueAt = long.MaxValue;
 		for (var node = _entries.First; node is not null;)
 		{
 			var entry = node.Value;
-			node = node.Next;
+			var next = node.Next;
 
 			// Releasing an open still in flight (no bytes yet) early would not bring the total under the limit.
-			var isDue = (entry.Bytes > 0 && _pendingBytes > limit) || Stopwatch.GetElapsedTime(entry.Since, now) >= (entry.Delay ?? ReleaseDelay);
-			if (!isDue)
-			{
-				continue;
-			}
+			var dueAt = GetDueAt(entry);
+			var isDue = (entry.Bytes > 0 && _pendingBytes > limit) || now >= dueAt;
 
 			// At the end of a pass, only what was let go before it began: an element re-added during this pass may be
 			// loaded by the next one, and data replaced during it is applied by the next one.
-			if (atLayoutPassEnd && entry.LayoutPass == _layoutPass)
+			if (isDue && atLayoutPassEnd && entry.LayoutPass == _layoutPass)
 			{
 				waitsForNextPass = true;
-				continue;
+				isDue = false;
 			}
 
-			Remove(entry);
-			entry.Release();
+			if (isDue)
+			{
+				Remove(entry);
+				entry.Release();
+
+				// A release can end other waits, the next one included; the walk then starts over.
+				if (next is { List: null })
+				{
+					next = _entries.First;
+					_earliestDueAt = long.MaxValue;
+				}
+			}
+			else
+			{
+				_earliestDueAt = Math.Min(_earliestDueAt, dueAt);
+			}
+
+			node = next;
 		}
 
 		if (waitsForNextPass)
@@ -175,19 +225,13 @@ internal static class PendingImageReleases
 		}
 
 		var now = Stopwatch.GetTimestamp();
-		var dueIn = TimeSpan.MaxValue;
-		foreach (var entry in _entries)
-		{
-			var remaining = (entry.Delay ?? ReleaseDelay) - Stopwatch.GetElapsedTime(entry.Since, now);
-			dueIn = remaining < dueIn ? remaining : dueIn;
-		}
-
-		dueIn = dueIn > TimeSpan.Zero ? dueIn : TimeSpan.Zero;
-		var dueAt = now + (long)(dueIn.TotalSeconds * Stopwatch.Frequency);
+		var dueAt = Math.Max(_earliestDueAt, now);
 		if (_timer is { IsRunning: true } && _timerDueAt <= dueAt)
 		{
 			return;
 		}
+
+		var dueIn = TimeSpan.FromSeconds((dueAt - now) / (double)Stopwatch.Frequency);
 
 		if (_timer is null)
 		{

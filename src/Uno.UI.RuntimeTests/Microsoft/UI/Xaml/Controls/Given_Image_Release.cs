@@ -657,6 +657,33 @@ public class Given_Image_Release
 
 	[TestMethod]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
+	public void When_Many_Images_Wait_Then_Each_Starts_Its_Wait_At_Once()
+	{
+		// Starting a wait must not walk the waits already under way: unloading thousands of small images at once would
+		// otherwise take quadratic time on the UI thread (40,000 waits is 800 million visits).
+		using var limit = SetMaxUndisplayedImageBytes(long.MaxValue);
+		using var delay = SetReleaseDelay(TimeSpan.FromSeconds(10));
+		var entries = new List<PendingImageReleases.Entry>(40_000);
+
+		try
+		{
+			var stopwatch = Stopwatch.StartNew();
+			for (var i = 0; i < 40_000; i++)
+			{
+				entries.Add(PendingImageReleases.Add(1, static () => { }));
+			}
+
+			stopwatch.Stop();
+			Assert.IsTrue(stopwatch.Elapsed < TimeSpan.FromMilliseconds(500), $"Starting 40,000 waits took {stopwatch.Elapsed}");
+		}
+		finally
+		{
+			entries.ForEach(PendingImageReleases.Remove);
+		}
+	}
+
+	[TestMethod]
+	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/25114")]
 	public async Task When_Replaced_Image_Released_After_Pass_Then_Older_Waiting_Image_Kept()
 	{
 		// An image waits within the limit when another source's displayed image is replaced. The replaced image goes after
