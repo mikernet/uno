@@ -37,6 +37,9 @@ namespace Microsoft.UI.Xaml.Media
 		// Whether the async open in _opening has yet to deliver: a subscriber arriving meanwhile waits for it.
 		private bool _isOpening;
 
+		// What the subscribers still show while the source opens what replaced it.
+		private ImageData _outgoingImageData;
+
 		// The wait of what this source decoded while nothing subscribes to it.
 		private PendingImageReleases.Entry _pendingRelease;
 
@@ -109,7 +112,7 @@ namespace Microsoft.UI.Xaml.Media
 			// Data shared through the bitmap cache stays: the source never releases it.
 			if (this is not SvgImageSource
 				&& _pendingRelease is null
-				&& (IsReleasable(_imageData) || _isOpening))
+				&& (IsReleasable(_imageData) || IsReleasable(_outgoingImageData) || _isOpening))
 			{
 				_pendingRelease = PendingImageReleases.Add(GetOwnedByteCount(), ReleaseUnused);
 			}
@@ -124,7 +127,7 @@ namespace Microsoft.UI.Xaml.Media
 			}
 		}
 
-		private long GetOwnedByteCount() => GetByteCount(_imageData);
+		private long GetOwnedByteCount() => GetByteCount(_imageData) + GetByteCount(_outgoingImageData);
 
 		private static long GetByteCount(ImageData data)
 			=> IsReleasable(data) ? ((CompositionImageSurface)data.CompositionSurface!).DecodedByteCount : 0;
@@ -136,6 +139,7 @@ namespace Microsoft.UI.Xaml.Media
 			// An open nothing waits for is stopped, which cancels an uncached download.
 			_opening.Disposable = null;
 			_isOpening = false;
+			ReleaseOutgoing();
 
 			if (IsReleasable(_imageData))
 			{
@@ -145,15 +149,35 @@ namespace Microsoft.UI.Xaml.Media
 		}
 
 		/// <summary>
-		/// Cancels an open in flight and releases the decoded data this source owns, for a change of the source.
+		/// Cancels an open in flight and drops the decoded data, for a change of the source. Data this source owns is
+		/// released at once when nothing shows it, and otherwise once the subscribers have what replaces it.
 		/// </summary>
 		private void ReleaseImageData()
 		{
 			_opening.Disposable = null;
 			_isOpening = false;
-			CancelPendingRelease();
-			ReleaseSurface(_imageData);
+
+			if (_subscriptions.Count == 0)
+			{
+				CancelPendingRelease();
+				ReleaseOutgoing();
+				ReleaseSurface(_imageData);
+			}
+			else if (IsReleasable(_imageData))
+			{
+				// WinUI also keeps the surface while it switches URIs, to avoid flickering (MUX Reference:
+				// CImageSource::ReloadImage, imagesource.cpp). Data still being opened leaves the outgoing one in place.
+				ReleaseOutgoing();
+				_outgoingImageData = _imageData;
+			}
+
 			_imageData = ImageData.Empty;
+		}
+
+		private void ReleaseOutgoing()
+		{
+			ReleaseSurface(_outgoingImageData);
+			_outgoingImageData = ImageData.Empty;
 		}
 
 		private static bool IsReleasable(ImageData data) => !data.IsShared && data.CompositionSurface is CompositionImageSurface;
@@ -247,6 +271,10 @@ namespace Microsoft.UI.Xaml.Media
 		{
 			_imageData = data; // We should also cache the targetWidth and targetHeight
 
+			// What the subscribers showed until now goes once they show this.
+			var outgoing = _outgoingImageData;
+			_outgoingImageData = ImageData.Empty;
+
 			if (this.Log().IsEnabled(LogLevel.Debug))
 			{
 				this.Log().Debug($"Image {this} opened with {data}");
@@ -256,6 +284,13 @@ namespace Microsoft.UI.Xaml.Media
 			foreach (var listener in listeners)
 			{
 				listener(data);
+			}
+
+			// A WriteableBitmap draws its new pixels into the same surface. Others go after the layout pass that applies
+			// the new data (an Image applies it when measured), so no frame is recorded with neither.
+			if (IsReleasable(outgoing) && !ReferenceEquals(outgoing.CompositionSurface, data.CompositionSurface))
+			{
+				PendingImageReleases.Add(0, () => ReleaseSurface(outgoing), delay: TimeSpan.Zero);
 			}
 
 			// A decode that completed while nothing subscribes waits with what this source had.
