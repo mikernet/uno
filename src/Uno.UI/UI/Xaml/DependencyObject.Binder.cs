@@ -286,13 +286,12 @@ namespace Microsoft.UI.Xaml
 			// items attach via SetParent (they become _childrenStores, not _childrenBindable), so propagate the
 			// inherited DataContext to them here — otherwise {Binding}s on collection items (e.g. the StateTriggers of
 			// a VisualState) never resolve. FrameworkElement stores reach these children through SetValue/Inheritance.
-			if (_dataContextProperty is null && _childrenStores.Count != 0)
+			if (_dataContextProperty is null && ChildStoreList.HasAny(_childrenStores))
 			{
 				var instanceRef = SelfWeakReference;
-				var localChildrenStores = _childrenStores;
-				for (var storeIndex = 0; storeIndex < localChildrenStores.Count; storeIndex++)
+				foreach (var child in ChildStoreList.Enumerate(_childrenStores))
 				{
-					CallChildCallback(localChildrenStores[storeIndex], instanceRef, FrameworkElement.DataContextProperty, actualDataContext);
+					CallChildCallback(child, instanceRef, FrameworkElement.DataContextProperty, actualDataContext);
 				}
 			}
 		}

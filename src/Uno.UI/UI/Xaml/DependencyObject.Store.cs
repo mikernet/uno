@@ -90,7 +90,8 @@ namespace Microsoft.UI.Xaml
 		private DependencyProperty _parentDataContextProperty = FrameworkElement.DataContextProperty;
 
 		private ImmutableList<ExplicitPropertyChangedCallback> _genericCallbacks = ImmutableList<ExplicitPropertyChangedCallback>.Empty;
-		private ImmutableList<DependencyObject> _childrenStores = ImmutableList<DependencyObject>.Empty;
+		// The children inherited properties propagate to.
+		private ChildStoreList? _childrenStores;
 		private ImmutableList<ParentChangedCallback> _parentChangedCallbacks = ImmutableList<ParentChangedCallback>.Empty;
 
 		/// <summary>
@@ -100,7 +101,7 @@ namespace Microsoft.UI.Xaml
 		private ManagedWeakReference? _visualTreeCacheWeakReference;
 
 		private readonly Type _originalObjectType;
-		private InheritedPropertiesDisposable? _inheritedProperties;
+		private InheritedPropertiesDisposable _inheritedProperties;
 		private ManagedWeakReference? _parentRef;
 		private object? _hardParentRef;
 		private Dictionary<DependencyProperty, ManagedWeakReference>? _inheritedForwardedProperties;
@@ -126,13 +127,22 @@ namespace Microsoft.UI.Xaml
 
 		private InheritedPropertiesDisposable? InheritedProperties
 		{
-			get => _inheritedProperties;
+			get => _inheritedProperties.IsActive ? _inheritedProperties : null;
 			set
 			{
-				_inheritedProperties?.Dispose();
-				_inheritedProperties = value;
+				if (_inheritedProperties.IsActive)
+				{
+					_inheritedProperties.Dispose();
+				}
+
+				_inheritedProperties = value ?? default;
 			}
 		}
+
+		/// <summary>
+		/// Where this object sits in its parent's <see cref="ChildStoreList"/>, kept by that list.
+		/// </summary>
+		internal int ChildStoreSlot { get; set; }
 
 		/// <summary>
 		/// Provides the parent Dependency Object of this dependency object
@@ -1181,7 +1191,7 @@ namespace Microsoft.UI.Xaml
 		/// </returns>
 		private ManagedWeakReference RegisterInheritedPropertyChangedCallback(DependencyObject childStore)
 		{
-			_childrenStores = _childrenStores.Add(childStore);
+			ChildStoreList.Add(ref _childrenStores, childStore);
 
 			// An object that opted out of auto-inheritance (e.g. VisualState/VisualStateGroup, which set
 			// IsAutoPropertyInheritanceEnabled = false) is not registered against its own parent until it has a
@@ -1201,8 +1211,7 @@ namespace Microsoft.UI.Xaml
 		{
 			if (objectStoreWeak.Target is DependencyObject that)
 			{
-				// Delegates integrate a null check when removing new delegates.
-				that._childrenStores = that._childrenStores.Remove(childStore);
+				that._childrenStores?.Remove(childStore);
 			}
 		}
 
@@ -1439,10 +1448,8 @@ namespace Microsoft.UI.Xaml
 				}
 
 				// If not, propagate the DP down to the child listeners, if any.
-				var localChildrenStores = _childrenStores;
-				for (var storeIndex = 0; storeIndex < localChildrenStores.Count; storeIndex++)
+				foreach (var child in ChildStoreList.Enumerate(_childrenStores))
 				{
-					var child = localChildrenStores[storeIndex];
 					child.OnParentPropertyChangedCallback(sourceInstance, parentProperty, newValue);
 				}
 			}
@@ -1462,7 +1469,7 @@ namespace Microsoft.UI.Xaml
 					// graph is built in reverse (such as with the
 					// XamlReader)
 					|| _properties is { HasBindings: true }
-					|| _childrenStores.Count != 0
+					|| ChildStoreList.HasAny(_childrenStores)
 				)
 			)
 			{
@@ -1499,6 +1506,9 @@ namespace Microsoft.UI.Xaml
 				_owner = owner;
 				_parentStoreWeak = parentStoreWeak;
 			}
+
+			// Not nullable, so that the field costs no more than the two references.
+			public bool IsActive => _owner is not null;
 
 			public void Dispose()
 			{
@@ -1576,10 +1586,8 @@ namespace Microsoft.UI.Xaml
 			_inheritedForwardedProperties = null;
 
 			var actualInstanceAlias = ActualInstance;
-			var localChildrenStores = _childrenStores;
-			for (var storeIndex = 0; storeIndex < localChildrenStores.Count; storeIndex++)
+			foreach (var child in ChildStoreList.Enumerate(_childrenStores))
 			{
-				var child = localChildrenStores[storeIndex];
 				foreach (var forwarded in forwardedProperties)
 				{
 					// Inheritable attached properties set on this store are sourced from itself: they are not stale.
@@ -1784,7 +1792,7 @@ namespace Microsoft.UI.Xaml
 		/// </summary>
 		private void PropagateInheritedProperties(DependencyObject? childStore = null)
 		{
-			if (childStore is null && _childrenStores.Count == 0)
+			if (childStore is null && !ChildStoreList.HasAny(_childrenStores))
 			{
 				// Avoid doing any unnecessary work.
 				return;
@@ -1828,10 +1836,8 @@ namespace Microsoft.UI.Xaml
 			}
 			else
 			{
-				var localChildrenStores = _childrenStores;
-				for (var childStoreIndex = 0; childStoreIndex < localChildrenStores.Count; childStoreIndex++)
+				foreach (var child in ChildStoreList.Enumerate(_childrenStores))
 				{
-					var child = localChildrenStores[childStoreIndex];
 					Propagate(child);
 				}
 			}
@@ -1887,10 +1893,9 @@ namespace Microsoft.UI.Xaml
 					}
 					else
 					{
-						var localChildrenStores = _childrenStores;
-						for (var i = 0; i < localChildrenStores.Count; i++)
+						foreach (var child in ChildStoreList.Enumerate(_childrenStores))
 						{
-							Propagate(localChildrenStores[i]);
+							Propagate(child);
 						}
 					}
 				}
@@ -2125,15 +2130,14 @@ namespace Microsoft.UI.Xaml
 				// Raise the property change for generic handlers for inheritance
 				if (frameworkPropertyMetadata.Options.HasInherits())
 				{
-					var localChildrenStores = _childrenStores;
-					if (localChildrenStores.Count > 0)
+					if (ChildStoreList.HasAny(_childrenStores))
 					{
 						// Minted only once we know there is an inheriting child: a leaf object never
 						// reaches this and so never rents a weak self-handle.
 						var instanceRef = SelfWeakReference;
-						for (var storeIndex = 0; storeIndex < localChildrenStores.Count; storeIndex++)
+						foreach (var child in ChildStoreList.Enumerate(_childrenStores))
 						{
-							CallChildCallback(localChildrenStores[storeIndex], instanceRef, property, newValue);
+							CallChildCallback(child, instanceRef, property, newValue);
 						}
 					}
 				}
